@@ -32,6 +32,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.hivemc.leveldb:leveldb:1.1.0")
     implementation("com.hivemc.leveldb:leveldb-api:1.1.0")
+    implementation("com.google.guava:guava:33.4.8-android")
     testImplementation("junit:junit:4.13.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
