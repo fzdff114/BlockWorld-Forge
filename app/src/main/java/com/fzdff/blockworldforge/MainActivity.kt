@@ -4,6 +4,8 @@ import android.os.Bundle
 import android.graphics.Color as AndroidColor
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -146,7 +148,8 @@ private data class WorldProject(
     val size: Int,
     val regionSummary: String? = null,
     val elevationSummary: String? = null,
-    val regionDataJson: String? = null
+    val regionDataJson: String? = null,
+    val metersPerBlock: Int = 4
 )
 
 class MainActivity : ComponentActivity() {
@@ -260,6 +263,7 @@ private fun AtlasTheme(content: @Composable () -> Unit) {
 @Composable
 private fun AtlasApp(mapView: MapView, map: MapLibreMap?) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var currentPage by rememberSaveable { mutableStateOf("projects") }
     var showNewProject by rememberSaveable { mutableStateOf(false) }
     val projects = remember(context) {
@@ -269,6 +273,46 @@ private fun AtlasApp(mapView: MapView, map: MapLibreMap?) {
     val selectedPoints = remember { mutableStateListOf<GeoCoordinate>() }
     var elevationGrid by remember { mutableStateOf<ElevationGrid?>(null) }
     var pendingRegion by remember { mutableStateOf<RegionDraft?>(null) }
+    var pendingExportProject by remember { mutableStateOf<WorldProject?>(null) }
+    var exportBusy by remember { mutableStateOf(false) }
+    var exportProgress by remember { mutableFloatStateOf(0f) }
+    var exportStatus by remember { mutableStateOf("") }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri ->
+        val project = pendingExportProject
+        pendingExportProject = null
+        if (uri != null && project != null && !project.regionDataJson.isNullOrBlank()) {
+            exportBusy = true
+            exportProgress = 0f
+            exportStatus = ""
+            scope.launch {
+                try {
+                    val report = withContext(Dispatchers.IO) {
+                        BedrockWorldExporter.export(
+                            context = context,
+                            worldName = project.name,
+                            regionJson = project.regionDataJson!!,
+                            metersPerBlock = project.metersPerBlock,
+                            outputUri = uri
+                        ) { completed, total ->
+                            scope.launch {
+                                exportProgress = completed.toFloat() / total.coerceAtLeast(1)
+                            }
+                        }
+                    }
+                    exportProgress = 1f
+                    exportStatus = "已导出：" + report.widthBlocks + " × " + report.depthBlocks +
+                        " 格 · " + report.chunkCount + " 个区块"
+                } catch (error: Exception) {
+                    exportStatus = "导出失败：" + (error.localizedMessage ?: "未知错误")
+                } finally {
+                    exportBusy = false
+                }
+            }
+        }
+    }
 
     var worldSize by rememberSaveable { mutableIntStateOf(10000) }
     var terrainStyle by rememberSaveable { mutableStateOf("自然") }
@@ -372,7 +416,19 @@ private fun AtlasApp(mapView: MapView, map: MapLibreMap?) {
                     onUseStructures = { useStructures = it }
                 )
                 "assets" -> AssetsScreen()
-                "export" -> ExportScreen()
+                "export" -> ExportScreen(
+                    projects = projects,
+                    exporting = exportBusy,
+                    progress = exportProgress,
+                    status = exportStatus,
+                    onExport = { project ->
+                        pendingExportProject = project
+                        val safeName = project.name.filter {
+                            it.isLetterOrDigit() || it == '-' || it == '_' || it == ' '
+                        }.trim().ifBlank { "Atlas" }
+                        exportLauncher.launch(safeName + ".mcworld")
+                    }
+                )
             }
         }
     }
@@ -382,7 +438,7 @@ private fun AtlasApp(mapView: MapView, map: MapLibreMap?) {
             regionSummary = pendingRegion?.summary,
             hasElevation = pendingRegion?.elevation != null,
             onDismiss = { showNewProject = false },
-            onCreate = { name, size ->
+            onCreate = { name, size, metersPerBlock ->
                 val region = pendingRegion
                 projects.add(
                     0,
@@ -391,7 +447,8 @@ private fun AtlasApp(mapView: MapView, map: MapLibreMap?) {
                         size = size,
                         regionSummary = region?.summary,
                         elevationSummary = region?.elevation?.summary,
-                        regionDataJson = region?.let { regionDraftJson(it) }
+                        regionDataJson = region?.let { regionDraftJson(it) },
+                        metersPerBlock = metersPerBlock
                     )
                 )
                 saveProjects(context, projects)
@@ -496,13 +553,18 @@ private fun ProjectRow(project: WorldProject) {
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Text(
-                    "${project.size / 1000}K × ${project.size / 1000}K",
-                    fontSize = 10.sp,
-                    color = Muted
-                )
-                project.regionSummary?.let {
-                    Text("范围 $it", fontSize = 10.sp, color = Color(0xFF60728D))
+                if (project.regionSummary != null) {
+                    Text(
+                        "范围 " + project.regionSummary + " · 比例 1:" + project.metersPerBlock,
+                        fontSize = 10.sp,
+                        color = Color(0xFF60728D)
+                    )
+                } else {
+                    Text(
+                        "比例 1:" + project.metersPerBlock + " · 未设置区域",
+                        fontSize = 10.sp,
+                        color = Muted
+                    )
                 }
                 project.elevationSummary?.let {
                     Text(it, fontSize = 10.sp, color = Color(0xFF60728D))
@@ -944,7 +1006,8 @@ private fun loadProjects(context: android.content.Context): List<WorldProject> {
                 size = item.optInt("size", 10000),
                 regionSummary = item.optString("regionSummary").takeIf { it.isNotBlank() && it != "null" },
                 elevationSummary = item.optString("elevationSummary").takeIf { it.isNotBlank() && it != "null" },
-                regionDataJson = item.optString("regionDataJson").takeIf { it.isNotBlank() && it != "null" }
+                regionDataJson = item.optString("regionDataJson").takeIf { it.isNotBlank() && it != "null" },
+                metersPerBlock = item.optInt("metersPerBlock", 4).let { if (it in listOf(1, 2, 4, 8, 16)) it else 4 }
             )
         }
     } catch (_: Exception) {
@@ -961,6 +1024,7 @@ private fun saveProjects(context: android.content.Context, projects: List<WorldP
             .put("regionSummary", project.regionSummary ?: JSONObject.NULL)
             .put("elevationSummary", project.elevationSummary ?: JSONObject.NULL)
             .put("regionDataJson", project.regionDataJson ?: JSONObject.NULL)
+            .put("metersPerBlock", project.metersPerBlock)
         array.put(item)
     }
     context.getSharedPreferences(PROJECT_PREFS, android.content.Context.MODE_PRIVATE)
@@ -1136,32 +1200,61 @@ private fun AssetRow(icon: ImageVector, title: String) {
 }
 
 @Composable
-private fun ExportScreen() {
+private fun ExportScreen(
+    projects: List<WorldProject>,
+    exporting: Boolean,
+    progress: Float,
+    status: String,
+    onExport: (WorldProject) -> Unit
+) {
+    val available = projects.filter {
+        !it.regionDataJson.isNullOrBlank() && it.regionDataJson!!.contains("elevationMeters")
+    }
     Column(
         Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 18.dp, vertical = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(13.dp)
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Text("导出", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Ink)
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(13.dp),
-            color = Color.White,
-            border = BorderStroke(1.dp, DividerColor)
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Outlined.Inventory2, contentDescription = null, tint = Accent)
-                Spacer(Modifier.width(11.dp))
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text("基岩版世界", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Ink)
-                    Text(".mcworld", fontSize = 10.sp, color = Muted)
+        if (available.isEmpty()) {
+            Text("先圈选现实区域并采集高程", fontSize = 12.sp, color = Muted)
+        } else {
+            available.forEach { project ->
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(13.dp),
+                    color = Color.White,
+                    border = BorderStroke(1.dp, DividerColor)
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 13.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(Icons.Outlined.Terrain, contentDescription = null, tint = Accent)
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(project.name, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text("比例 1:" + project.metersPerBlock, fontSize = 10.sp, color = Muted)
+                        }
+                        OutlinedButton(
+                            onClick = { onExport(project) },
+                            enabled = !exporting,
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 7.dp)
+                        ) {
+                            Text("生成世界", fontSize = 11.sp)
+                        }
+                    }
                 }
-                Text("开发中", fontSize = 10.sp, color = Muted)
             }
+        }
+        if (exporting) {
+            LinearProgressIndicator(progress = progress.coerceIn(0f, 1f), modifier = Modifier.fillMaxWidth())
+            Text("正在写入区块与数据库…", fontSize = 10.sp, color = Muted)
+        }
+        if (status.isNotBlank()) {
+            Text(status, fontSize = 11.sp, color = if (status.startsWith("导出失败")) MaterialTheme.colorScheme.error else Accent)
         }
     }
 }
@@ -1171,38 +1264,40 @@ private fun NewProjectDialog(
     regionSummary: String?,
     hasElevation: Boolean,
     onDismiss: () -> Unit,
-    onCreate: (String, Int) -> Unit
+    onCreate: (String, Int, Int) -> Unit
 ) {
     var name by rememberSaveable { mutableStateOf("") }
     var size by rememberSaveable { mutableIntStateOf(10000) }
+    var metersPerBlock by rememberSaveable { mutableIntStateOf(4) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("新建项目", fontWeight = FontWeight.Bold) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
                     label = { Text("项目名称") },
                     singleLine = true
                 )
-                SectionLabel("地图尺寸")
+                SectionLabel("现实比例")
                 Row(
                     Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
-                    mapSizes.forEach { option ->
+                    listOf(1, 2, 4, 8, 16).forEach { scale ->
                         FilterChip(
-                            selected = size == option,
-                            onClick = { size = option },
-                            label = { Text("${option / 1000}K", fontSize = 10.sp) }
+                            selected = metersPerBlock == scale,
+                            onClick = { metersPerBlock = scale },
+                            label = { Text("1:" + scale, fontSize = 10.sp) }
                         )
                     }
                 }
+                Text("1 个方块代表 " + metersPerBlock + " 米", fontSize = 10.sp, color = Muted)
                 if (regionSummary != null) {
                     Text(
-                        if (hasElevation) "已附加区域与高程：$regionSummary" else "已附加区域：$regionSummary",
+                        if (hasElevation) "已附加区域与高程：" + regionSummary else "已附加区域：" + regionSummary,
                         fontSize = 10.sp,
                         color = Accent
                     )
@@ -1210,7 +1305,7 @@ private fun NewProjectDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onCreate(name, size) }) { Text("创建") }
+            TextButton(onClick = { onCreate(name, size, metersPerBlock) }) { Text("创建") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("取消") }
