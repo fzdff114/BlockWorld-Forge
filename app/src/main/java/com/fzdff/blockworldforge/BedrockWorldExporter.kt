@@ -50,6 +50,7 @@ internal object BedrockWorldExporter {
     private const val SUB_CHUNK_VERSION = 9
     private const val BLOCK_STATE_VERSION = 18168865
     private const val NETWORK_VERSION = 2193 // Bedrock 1.26.52.3
+    internal const val WORLD_GENERATOR_INFINITE = 1
     // A 5,044 × 4,759 map is about 94,168 Minecraft chunks.
     // Keep a mobile-safe ceiling, but do not reject normal large maps at 512 blocks.
     private const val MAX_CHUNKS = 100_000L
@@ -208,6 +209,12 @@ internal object BedrockWorldExporter {
         return chunkCount
     }
 
+    internal fun surfaceYForElevation(elevationMeters: Double, verticalMetersPerBlock: Double): Int {
+        require(verticalMetersPerBlock > 0.0)
+        return (SEA_LEVEL + (elevationMeters / verticalMetersPerBlock).roundToInt())
+            .coerceIn(MIN_Y + 4, MAX_Y - 5)
+    }
+
     internal fun terrainFloorY(minimumElevation: Double, maximumElevation: Double, metersPerBlock: Int): Int {
         require(metersPerBlock > 0)
         val verticalMetersPerBlock = max(
@@ -262,7 +269,9 @@ internal object BedrockWorldExporter {
         nbt.writeIntTag("SpawnZ", spawnZ)
         nbt.writeLongTag("Time", 0L)
         nbt.writeLongTag("LastPlayed", System.currentTimeMillis())
-        nbt.writeIntTag("Generator", 1)
+        // Generator 1 = Infinite. The actual terrain is stored in LevelDB chunks below;
+        // never mark these imported real-world maps as Flat (Generator 2).
+        nbt.writeIntTag("Generator", WORLD_GENERATOR_INFINITE)
         nbt.writeIntTag("GameType", 1)
         nbt.writeIntTag("Difficulty", 1)
         nbt.writeByteTag("commandsEnabled", 1)
@@ -439,8 +448,7 @@ internal object BedrockWorldExporter {
                                     val point = coordinateAt(input, size, worldX, worldZ)
                                     if (!insidePolygon(point, input.polygon)) continue
                                     val elevation = sampleElevation(input, point)
-                                    val surfaceY = (SEA_LEVEL + (elevation / verticalMetersPerBlock).roundToInt())
-                                        .coerceIn(MIN_Y + 4, MAX_Y - 5)
+                                    val surfaceY = surfaceYForElevation(elevation, verticalMetersPerBlock)
 
                                     setBlock(sections, localX, worldFloorY, localZ, BEDROCK)
                                     for (y in worldFloorY + 1 until surfaceY - 3) {
