@@ -6,9 +6,7 @@ import org.json.JSONObject
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
-import kotlin.math.abs
 import kotlin.math.max
-import kotlin.math.min
 
 internal data class RenderedBuildingReadResult(
     val buildings: List<OsmBuilding>,
@@ -55,14 +53,14 @@ internal object RenderedMapBuildingReader {
         // extrusion layer is visible at street zoom. Query both so capture does
         // not depend on which visual layer happens to be active at this zoom.
         val rendered = runCatching {
-            map.queryRenderedFeatures(bounds, BUILDING_LAYER_IDS)
+            map.queryRenderedFeatures(bounds, *BUILDING_LAYER_IDS)
         }.getOrElse {
             emptyList()
         }
         val features = if (rendered.isNotEmpty()) rendered else {
             // Fallback for customized style layer IDs: query the rendered viewport
             // and filter features by building-specific attributes and polygon geometry.
-            runCatching { map.queryRenderedFeatures(bounds, null) }.getOrDefault(emptyList())
+            runCatching { map.queryRenderedFeatures(bounds) }.getOrDefault(emptyList())
         }
 
         val buildings = ArrayList<OsmBuilding>()
