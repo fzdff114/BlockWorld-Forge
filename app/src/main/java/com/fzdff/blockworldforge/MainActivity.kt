@@ -259,9 +259,12 @@ private fun AtlasTheme(content: @Composable () -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AtlasApp(mapView: MapView, map: MapLibreMap?) {
+    val context = LocalContext.current
     var currentPage by rememberSaveable { mutableStateOf("projects") }
     var showNewProject by rememberSaveable { mutableStateOf(false) }
-    val projects = remember { mutableStateListOf<WorldProject>() }
+    val projects = remember(context) {
+        mutableStateListOf<WorldProject>().apply { addAll(loadProjects(context)) }
+    }
 
     val selectedPoints = remember { mutableStateListOf<GeoCoordinate>() }
     var elevationGrid by remember { mutableStateOf<ElevationGrid?>(null) }
@@ -391,6 +394,7 @@ private fun AtlasApp(mapView: MapView, map: MapLibreMap?) {
                         regionDataJson = region?.let { regionDraftJson(it) }
                     )
                 )
+                saveProjects(context, projects)
                 worldSize = size
                 pendingRegion = null
                 showNewProject = false
@@ -922,6 +926,47 @@ private fun fetchElevationGrid(boundary: List<GeoCoordinate>): ElevationGrid {
         average = allValues.average(),
         sampleCount = allValues.size
     )
+}
+
+
+private const val PROJECT_PREFS = "atlas_local_projects"
+private const val PROJECTS_KEY = "projects_json"
+
+private fun loadProjects(context: android.content.Context): List<WorldProject> {
+    return try {
+        val raw = context.getSharedPreferences(PROJECT_PREFS, android.content.Context.MODE_PRIVATE)
+            .getString(PROJECTS_KEY, "[]") ?: "[]"
+        val array = JSONArray(raw)
+        (0 until array.length()).mapNotNull { index ->
+            val item = array.optJSONObject(index) ?: return@mapNotNull null
+            WorldProject(
+                name = item.optString("name", "未命名项目"),
+                size = item.optInt("size", 10000),
+                regionSummary = item.optString("regionSummary").takeIf { it.isNotBlank() && it != "null" },
+                elevationSummary = item.optString("elevationSummary").takeIf { it.isNotBlank() && it != "null" },
+                regionDataJson = item.optString("regionDataJson").takeIf { it.isNotBlank() && it != "null" }
+            )
+        }
+    } catch (_: Exception) {
+        emptyList()
+    }
+}
+
+private fun saveProjects(context: android.content.Context, projects: List<WorldProject>) {
+    val array = JSONArray()
+    projects.forEach { project ->
+        val item = JSONObject()
+            .put("name", project.name)
+            .put("size", project.size)
+            .put("regionSummary", project.regionSummary ?: JSONObject.NULL)
+            .put("elevationSummary", project.elevationSummary ?: JSONObject.NULL)
+            .put("regionDataJson", project.regionDataJson ?: JSONObject.NULL)
+        array.put(item)
+    }
+    context.getSharedPreferences(PROJECT_PREFS, android.content.Context.MODE_PRIVATE)
+        .edit()
+        .putString(PROJECTS_KEY, array.toString())
+        .apply()
 }
 
 private fun regionDraftJson(region: RegionDraft): String {
