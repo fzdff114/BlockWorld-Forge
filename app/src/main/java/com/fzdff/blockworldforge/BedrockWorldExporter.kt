@@ -47,6 +47,7 @@ internal object BedrockWorldExporter {
     private const val CHUNK_VERSION = 41
     private const val SUB_CHUNK_VERSION = 9
     private const val BLOCK_STATE_VERSION = 18168865
+    private const val NETWORK_VERSION = 2193 // Bedrock 1.26.52.3
     private const val MAX_COLUMNS = 262144L
     private const val MAX_EDGE_BLOCKS = 512
     private const val TAG_DATA_3D: Byte = 0x2B
@@ -185,7 +186,11 @@ internal object BedrockWorldExporter {
         val nbt = ByteArrayOutputStream()
         nbt.writeCompoundStart("")
         nbt.writeIntTag("StorageVersion", 10)
-        nbt.writeIntTag("NetworkVersion", 594)
+        nbt.writeIntTag("NetworkVersion", NETWORK_VERSION)
+        nbt.writeIntTag("WorldVersion", 1)
+        nbt.writeStringTag("InventoryVersion", "1.21.120")
+        nbt.writeIntListTag("lastOpenedWithVersion", intArrayOf(1, 26, 52, 3))
+        nbt.writeIntListTag("MinimumCompatibleClientVersion", intArrayOf(1, 26, 52, 3))
         nbt.writeStringTag("LevelName", worldName.take(64))
         nbt.writeLongTag("RandomSeed", System.currentTimeMillis())
         nbt.writeIntTag("SpawnX", spawnX)
@@ -566,11 +571,12 @@ internal object BedrockWorldExporter {
         return valid.firstOrNull { count <= (1 shl it) } ?: 16
     }
 
-    private fun encodePaletteEntry(blockId: Int): ByteArray {
+    internal fun encodePaletteEntry(blockId: Int): ByteArray {
         val output = ByteArrayOutputStream()
         output.writeCompoundStart("")
         output.writeStringTag("name", blockName(blockId))
         output.writeCompoundStart("states")
+        if (blockId == BEDROCK) output.writeByteTag("infiniburn_bit", 0)
         if (blockId == WATER) output.writeIntTag("liquid_depth", 0)
         output.writeEnd()
         output.writeIntTag("version", BLOCK_STATE_VERSION)
@@ -670,6 +676,13 @@ internal object BedrockWorldExporter {
     private fun ByteArrayOutputStream.writeLongTag(name: String, value: Long) {
         writeTagHeader(4, name)
         writeLongLE(value)
+    }
+
+    private fun ByteArrayOutputStream.writeIntListTag(name: String, values: IntArray) {
+        writeTagHeader(9, name)
+        write(3) // TAG_Int elements
+        writeIntLE(values.size)
+        values.forEach { writeIntLE(it) }
     }
 
     private fun ByteArrayOutputStream.writeByteTag(name: String, value: Int) {
