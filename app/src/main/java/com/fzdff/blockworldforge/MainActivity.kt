@@ -94,8 +94,6 @@ private val navPages = listOf(
 private val mapSizes = listOf(4000, 6000, 10000, 15000, 20000)
 
 private data class GeoCoordinate(val latitude: Double, val longitude: Double)
-private data class GridCell(val row: Int, val column: Int, val coordinate: GeoCoordinate)
-
 private data class OsmBuilding(
     val polygon: List<GeoCoordinate>,
     val heightMeters: Double,
@@ -800,7 +798,7 @@ private fun MapScreen(
                     Text(errorMessage, color = MaterialTheme.colorScheme.error, fontSize = 10.sp)
                 }
                 Text(
-                    "地图 © OpenStreetMap / OpenMapTiles · 高程 © Mapzen Terrain Tiles",
+                    "OpenFreeMap © OpenMapTiles · OpenStreetMap contributors (ODbL) · DEM © Mapzen",
                     fontSize = 9.sp,
                     color = Muted
                 )
@@ -1030,7 +1028,7 @@ private fun fetchOsmBuildings(west: Double, east: Double, south: Double, north: 
             val elements = JSONObject(body).optJSONArray("elements") ?: JSONArray()
             val buildings = ArrayList<OsmBuilding>()
             for (i in 0 until elements.length()) {
-                if (buildings.size >= 20000) break
+                if (buildings.size >= 10000) break
                 val element = elements.optJSONObject(i) ?: continue
                 val tags = element.optJSONObject("tags") ?: JSONObject()
                 val height = parseOsmHeight(tags, "height")
@@ -1094,7 +1092,7 @@ private fun fetchElevationGrid(boundary: List<GeoCoordinate>): ElevationGrid {
     val depthMeters = haversineMeters(south, centerLongitude, north, centerLongitude)
 
     // Sample a 20 m grid, capped at 512 × 512 to bound project size and RAM.
-    val columns = ceil(widthMeters / 20.0).toInt().coerceIn(2, 512)
+    val columns = ceil(widthMeters / 20.0).toInt().coerceIn(2, 384)
     val rows = ceil(depthMeters / 20.0).toInt().coerceIn(2, 512)
     val resolutionMeters = max(widthMeters / columns, depthMeters / rows)
     val zoom = chooseTerrariumZoom(west, east, south, north)
