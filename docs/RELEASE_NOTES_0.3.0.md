@@ -14,6 +14,11 @@
 
 基岩、石头、泥土、草方块；负海拔区域加沙底和水层。高程源仍为 20×20 网格，插值不会增加原始采样数据没有的地形细节。
 
+## 兼容性
+
+- 目标版本：Minecraft Bedrock 1.26.52.3（NetworkVersion 2193、Chunk Version 41、SubChunk v9）。
+- 最低系统：Android 8.0（API 26），用于兼容 LevelDB Java 11 字节码中的 MethodHandle 调用。
+
 ## 测试限制
 
 - 每个方向最多 512 方块，总计最多 262,144 个地表格。
