@@ -43,4 +43,5 @@ jobs:
           body_path: docs/RELEASE_NOTES_0.3.0.md
           draft: false
           prerelease: true
+          overwrite_files: true
           files: app/build/outputs/apk/debug/app-debug.apk
