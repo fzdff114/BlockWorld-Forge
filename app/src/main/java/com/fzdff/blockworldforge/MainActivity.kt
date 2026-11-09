@@ -299,6 +299,7 @@ private fun AtlasApp(mapView: MapView, map: MapLibreMap?) {
                         ) { completed, total ->
                             scope.launch {
                                 exportProgress = completed.toFloat() / total.coerceAtLeast(1)
+                                exportStatus = "分批写入区块：" + completed + " / " + total
                             }
                         }
                     }
@@ -1251,7 +1252,11 @@ private fun ExportScreen(
         }
         if (exporting) {
             LinearProgressIndicator(progress = progress.coerceIn(0f, 1f), modifier = Modifier.fillMaxWidth())
-            Text("正在写入区块与数据库…", fontSize = 10.sp, color = Muted)
+            Text(
+                "按 8×8 区块逐批生成并提交，进度 " + (progress * 100).toInt() + "%",
+                fontSize = 10.sp,
+                color = Muted
+            )
         }
         if (status.isNotBlank()) {
             Text(status, fontSize = 11.sp, color = if (status.startsWith("导出失败")) MaterialTheme.colorScheme.error else Accent)
