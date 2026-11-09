@@ -54,8 +54,6 @@ import org.maplibre.android.style.layers.PropertyFactory.fillOpacity
 import org.maplibre.android.style.layers.PropertyFactory.lineColor
 import org.maplibre.android.style.layers.PropertyFactory.lineWidth
 import org.maplibre.android.style.sources.GeoJsonSource
-import org.maplibre.android.style.Style as MapStyle
-import org.maplibre.android.views.MapView as NativeMapView
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
