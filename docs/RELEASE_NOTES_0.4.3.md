@@ -21,6 +21,9 @@
 - Terrain DEM sampling spacing (20 m / 30 m) is not a guarantee of local source-data accuracy.
 - Actual Minecraft Bedrock device import and visual appearance still require device-side verification.
 
+## Build correction
+- Fix the Kotlin import for polygon-ring area calculation in the Shapefile importer before the 0.4.3 release build.
+
 ## Regression coverage
 - Verify local-elevation datum on high-altitude plateaus.
 - Verify vertical exaggeration behavior, water level, Web Mercator conversion, and numeric building-height parsing.
