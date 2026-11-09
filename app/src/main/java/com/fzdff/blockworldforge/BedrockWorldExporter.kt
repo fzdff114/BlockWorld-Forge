@@ -14,11 +14,12 @@ import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
-import java.io.FileOutputStream
+import java.io.FilterOutputStream
 import java.io.IOException
+import java.io.OutputStream
 import java.util.UUID
+import java.util.zip.Deflater
 import java.util.zip.ZipEntry
-import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 import kotlin.math.asin
 import kotlin.math.ceil
@@ -48,8 +49,11 @@ internal object BedrockWorldExporter {
     private const val SUB_CHUNK_VERSION = 9
     private const val BLOCK_STATE_VERSION = 18168865
     private const val NETWORK_VERSION = 2193 // Bedrock 1.26.52.3
-    private const val MAX_COLUMNS = 262144L
-    private const val MAX_EDGE_BLOCKS = 512
+    // A 5,044 × 4,759 map is about 94,168 Minecraft chunks.
+    // Keep a mobile-safe ceiling, but do not reject normal large maps at 512 blocks.
+    private const val MAX_CHUNKS = 100_000L
+    private const val MAX_EDGE_BLOCKS = 8192
+    private const val TILE_CHUNKS = 8
     private const val TAG_DATA_3D: Byte = 0x2B
     private const val TAG_VERSION: Byte = 0x2C
     private const val TAG_SUB_CHUNK: Byte = 0x2F
@@ -92,17 +96,13 @@ internal object BedrockWorldExporter {
         require(metersPerBlock in listOf(1, 2, 4, 8, 16)) { "不支持的地图比例" }
         val input = parseRegion(regionJson)
         val dimensions = scaledDimensions(input.widthMeters, input.depthMeters, metersPerBlock)
-        val columnCount = dimensions.width.toLong() * dimensions.depth.toLong()
-        require(dimensions.width <= MAX_EDGE_BLOCKS && dimensions.depth <= MAX_EDGE_BLOCKS && columnCount <= MAX_COLUMNS) {
-            "当前比例会生成过大的地图（" + dimensions.width + "×" + dimensions.depth +
-                " 格）。请改用更大的比例尺，例如 1:8 或 1:16。"
-        }
+        validateDimensions(dimensions)
 
         val tempRoot = File(context.cacheDir, "atlas-export-" + UUID.randomUUID().toString())
         val worldFolder = File(tempRoot, "world")
         val dbFolder = File(worldFolder, "db")
-        val archive = File(tempRoot, "Atlas.mcworld")
         if (!dbFolder.mkdirs()) throw IOException("无法创建临时世界数据库目录")
+        var exportCompleted = false
 
         try {
             val chunkCount = writeWorldDatabase(
@@ -123,27 +123,32 @@ internal object BedrockWorldExporter {
             )
             File(worldFolder, "level.dat").writeBytes(levelDat)
             validateLevelDat(File(worldFolder, "level.dat"))
-            createMcWorldArchive(worldFolder, archive)
-            validateMcWorldArchive(archive)
 
+            // Stream the finished world directly to the SAF destination. This avoids
+            // keeping both a complete DB folder and a second complete .mcworld ZIP in cache.
             val output = context.contentResolver.openOutputStream(outputUri, "w")
                 ?: throw IOException("无法打开目标文件")
-            output.use { target ->
-                BufferedInputStream(FileInputStream(archive)).use { source ->
-                    source.copyTo(target, 64 * 1024)
-                }
-            }
+            val archiveBytes = createMcWorldArchive(worldFolder, output)
 
+            exportCompleted = true
             return BedrockExportReport(
                 widthBlocks = dimensions.width,
                 depthBlocks = dimensions.depth,
                 chunkCount = chunkCount,
-                archiveBytes = archive.length(),
+                archiveBytes = archiveBytes,
                 metersPerBlock = metersPerBlock,
                 minimumElevation = input.minimum,
                 maximumElevation = input.maximum
             )
         } finally {
+            if (!exportCompleted) {
+                // Best-effort cleanup of a partially written SAF document.
+                try {
+                    context.contentResolver.delete(outputUri, null, null)
+                } catch (_: Exception) {
+                    // Some document providers do not support deleting created files.
+                }
+            }
             tempRoot.deleteRecursively()
         }
     }
@@ -155,6 +160,39 @@ internal object BedrockWorldExporter {
             width = ceil(widthMeters / metersPerBlock.toDouble()).toInt().coerceAtLeast(1),
             depth = ceil(depthMeters / metersPerBlock.toDouble()).toInt().coerceAtLeast(1)
         )
+    }
+
+    internal fun chunkCountForSize(size: GridSize): Long {
+        val chunksX = ceil(size.width / 16.0).toLong()
+        val chunksZ = ceil(size.depth / 16.0).toLong()
+        return chunksX * chunksZ
+    }
+
+    internal fun validateDimensions(size: GridSize): Long {
+        val chunkCount = chunkCountForSize(size)
+        require(
+            size.width <= MAX_EDGE_BLOCKS &&
+                size.depth <= MAX_EDGE_BLOCKS &&
+                chunkCount <= MAX_CHUNKS
+        ) {
+            "地图尺寸为 " + size.width + "×" + size.depth + " 格（约 " +
+                chunkCount + " 个区块），超过移动设备分块导出的安全上限 " +
+                MAX_CHUNKS + " 个区块。请缩小圈选区域或改用更大的比例尺。"
+        }
+        return chunkCount
+    }
+
+    internal fun terrainFloorY(minimumElevation: Double, maximumElevation: Double, metersPerBlock: Int): Int {
+        require(metersPerBlock > 0)
+        val verticalMetersPerBlock = max(
+            metersPerBlock.toDouble(),
+            max(0.0, maximumElevation) / 280.0
+        )
+        val minimumSurfaceY = (SEA_LEVEL + (minimumElevation / verticalMetersPerBlock).roundToInt())
+            .coerceIn(MIN_Y + 4, MAX_Y - 5)
+        // Keep a four-block foundation below the lowest point instead of filling
+        // every column all the way down to Y=-64.
+        return max(MIN_Y, minimumSurfaceY - 4)
     }
 
     internal fun chunkKey(
@@ -305,73 +343,87 @@ internal object BedrockWorldExporter {
         var firstSubChunkKey: ByteArray? = null
         val chunksX = ceil(size.width / 16.0).toInt()
         val chunksZ = ceil(size.depth / 16.0).toInt()
-        val totalChunks = chunksX * chunksZ
+        val totalChunks = validateDimensions(size).toInt()
         var chunksWritten = 0
+        var processedChunks = 0
         val verticalMetersPerBlock = max(
             metersPerBlock.toDouble(),
             max(0.0, input.maximum) / 280.0
         )
+        val worldFloorY = terrainFloorY(input.minimum, input.maximum, metersPerBlock)
         val sink = DatabaseBatchSink(db)
 
         try {
-            for (chunkZ in 0 until chunksZ) {
-                for (chunkX in 0 until chunksX) {
-                    val sections = HashMap<Int, IntArray>()
-                    val heightMap = IntArray(256) { MIN_Y }
-                    var columnsInChunk = 0
+            // Process an 8×8 group of Minecraft chunks at a time. Each group is
+            // committed to LevelDB before moving on, so RAM use stays bounded.
+            for (tileZ in 0 until chunksZ step TILE_CHUNKS) {
+                for (tileX in 0 until chunksX step TILE_CHUNKS) {
+                    val tileEndZ = min(chunksZ, tileZ + TILE_CHUNKS)
+                    val tileEndX = min(chunksX, tileX + TILE_CHUNKS)
 
-                    for (localZ in 0 until 16) {
-                        val worldZ = chunkZ * 16 + localZ
-                        if (worldZ >= size.depth) continue
-                        for (localX in 0 until 16) {
-                            val worldX = chunkX * 16 + localX
-                            if (worldX >= size.width) continue
-                            val point = coordinateAt(input, size, worldX, worldZ)
-                            if (!insidePolygon(point, input.polygon)) continue
-                            val elevation = sampleElevation(input, point)
-                            val surfaceY = (SEA_LEVEL + (elevation / verticalMetersPerBlock).roundToInt())
-                                .coerceIn(MIN_Y + 4, MAX_Y - 5)
+                    for (chunkZ in tileZ until tileEndZ) {
+                        for (chunkX in tileX until tileEndX) {
+                            processedChunks++
+                            val sections = HashMap<Int, IntArray>()
+                            val heightMap = IntArray(256) { worldFloorY }
+                            var columnsInChunk = 0
 
-                            setBlock(sections, localX, MIN_Y, localZ, BEDROCK)
-                            for (y in MIN_Y + 1 until surfaceY - 3) {
-                                setBlock(sections, localX, y, localZ, STONE)
-                            }
-                            for (y in surfaceY - 3 until surfaceY) {
-                                setBlock(sections, localX, y, localZ, DIRT)
-                            }
-                            setBlock(sections, localX, surfaceY, localZ, if (elevation < 0.0) SAND else GRASS)
-                            if (surfaceY < SEA_LEVEL) {
-                                for (y in surfaceY + 1..SEA_LEVEL) {
-                                    setBlock(sections, localX, y, localZ, WATER)
+                            for (localZ in 0 until 16) {
+                                val worldZ = chunkZ * 16 + localZ
+                                if (worldZ >= size.depth) continue
+                                for (localX in 0 until 16) {
+                                    val worldX = chunkX * 16 + localX
+                                    if (worldX >= size.width) continue
+                                    val point = coordinateAt(input, size, worldX, worldZ)
+                                    if (!insidePolygon(point, input.polygon)) continue
+                                    val elevation = sampleElevation(input, point)
+                                    val surfaceY = (SEA_LEVEL + (elevation / verticalMetersPerBlock).roundToInt())
+                                        .coerceIn(MIN_Y + 4, MAX_Y - 5)
+
+                                    setBlock(sections, localX, worldFloorY, localZ, BEDROCK)
+                                    for (y in worldFloorY + 1 until surfaceY - 3) {
+                                        setBlock(sections, localX, y, localZ, STONE)
+                                    }
+                                    for (y in surfaceY - 3 until surfaceY) {
+                                        setBlock(sections, localX, y, localZ, DIRT)
+                                    }
+                                    setBlock(sections, localX, surfaceY, localZ, if (elevation < 0.0) SAND else GRASS)
+                                    if (surfaceY < SEA_LEVEL) {
+                                        for (y in surfaceY + 1..SEA_LEVEL) {
+                                            setBlock(sections, localX, y, localZ, WATER)
+                                        }
+                                        heightMap[localZ * 16 + localX] = SEA_LEVEL + 1
+                                    } else {
+                                        heightMap[localZ * 16 + localX] = surfaceY + 1
+                                    }
+                                    columnsInChunk++
                                 }
-                                heightMap[localZ * 16 + localX] = SEA_LEVEL + 1
-                            } else {
-                                heightMap[localZ * 16 + localX] = surfaceY + 1
                             }
-                            columnsInChunk++
+
+                            if (columnsInChunk > 0) {
+                                val versionKey = chunkKey(chunkX, chunkZ, TAG_VERSION)
+                                val data3dKey = chunkKey(chunkX, chunkZ, TAG_DATA_3D)
+                                val finalizedKey = chunkKey(chunkX, chunkZ, TAG_FINALIZED)
+                                sink.put(versionKey, byteArrayOf(CHUNK_VERSION.toByte()))
+                                sink.put(finalizedKey, intBytesLE(2))
+                                sink.put(data3dKey, encodeData3D(heightMap))
+                                if (firstVersionKey == null) firstVersionKey = versionKey
+
+                                for ((sectionY, blocks) in sections.toSortedMap()) {
+                                    val subKey = chunkKey(chunkX, chunkZ, TAG_SUB_CHUNK, sectionY)
+                                    val encoded = encodeSubChunk(sectionY, blocks)
+                                    sink.put(subKey, encoded)
+                                    if (firstSubChunkKey == null) firstSubChunkKey = subKey
+                                }
+                                chunksWritten++
+                            }
                         }
                     }
 
-                    if (columnsInChunk > 0) {
-                        val versionKey = chunkKey(chunkX, chunkZ, TAG_VERSION)
-                        val data3dKey = chunkKey(chunkX, chunkZ, TAG_DATA_3D)
-                        val finalizedKey = chunkKey(chunkX, chunkZ, TAG_FINALIZED)
-                        sink.put(versionKey, byteArrayOf(CHUNK_VERSION.toByte()))
-                        sink.put(finalizedKey, intBytesLE(2))
-                        sink.put(data3dKey, encodeData3D(heightMap))
-                        if (firstVersionKey == null) firstVersionKey = versionKey
-
-                        for ((sectionY, blocks) in sections.toSortedMap()) {
-                            val subKey = chunkKey(chunkX, chunkZ, TAG_SUB_CHUNK, sectionY)
-                            val encoded = encodeSubChunk(sectionY, blocks)
-                            sink.put(subKey, encoded)
-                            if (firstSubChunkKey == null) firstSubChunkKey = subKey
-                        }
-                        chunksWritten++
-                    }
-                    if ((chunksWritten % 8 == 0) || (chunkZ == chunksZ - 1 && chunkX == chunksX - 1)) {
-                        onProgress(chunkZ * chunksX + chunkX + 1, totalChunks)
-                    }
+                    // Commit one tile and report progress, even when some chunks are outside
+                    // an irregular selection polygon.
+                    sink.flush()
+                    onProgress(processedChunks, totalChunks)
                 }
             }
             sink.finish()
@@ -399,7 +451,7 @@ internal object BedrockWorldExporter {
             if (queued >= 384) flush()
         }
 
-        private fun flush() {
+        fun flush() {
             if (queued > 0) db.write(batch)
             batch.close()
             batch = db.createWriteBatch()
@@ -603,10 +655,19 @@ internal object BedrockWorldExporter {
             .coerceIn(MIN_Y + 4, MAX_Y - 4)
     }
 
-    private fun createMcWorldArchive(worldFolder: File, archive: File) {
-        ZipOutputStream(BufferedOutputStream(FileOutputStream(archive))).use { zip ->
-            val files = worldFolder.walkTopDown().filter { it.isFile }.toList()
-            require(File(worldFolder, "db/CURRENT").exists()) { "LevelDB 没有生成 CURRENT 文件" }
+    private fun createMcWorldArchive(worldFolder: File, output: OutputStream): Long {
+        val files = worldFolder.walkTopDown().filter { it.isFile }.toList()
+        require(File(worldFolder, "db/CURRENT").exists()) { "LevelDB 没有生成 CURRENT 文件" }
+        require(File(worldFolder, "level.dat").exists()) { "世界包缺少 level.dat" }
+        require(File(worldFolder, "levelname.txt").exists()) { "世界包缺少 levelname.txt" }
+        require(files.any { it.name.startsWith("MANIFEST-") && it.parentFile == File(worldFolder, "db") }) {
+            "世界包缺少 LevelDB MANIFEST"
+        }
+
+        val counter = CountingOutputStream(BufferedOutputStream(output))
+        ZipOutputStream(counter).use { zip ->
+            // LevelDB SST files are already compressed; favor speed over recompressing them.
+            zip.setLevel(Deflater.BEST_SPEED)
             for (file in files) {
                 val relative = file.absolutePath.substring(worldFolder.absolutePath.length + 1)
                     .replace(File.separatorChar, '/')
@@ -615,15 +676,21 @@ internal object BedrockWorldExporter {
                 zip.closeEntry()
             }
         }
+        return counter.bytesWritten
     }
 
-    private fun validateMcWorldArchive(archive: File) {
-        ZipFile(archive).use { zip ->
-            require(zip.getEntry("level.dat") != null) { "世界包缺少 level.dat" }
-            require(zip.getEntry("levelname.txt") != null) { "世界包缺少 levelname.txt" }
-            require(zip.getEntry("db/CURRENT") != null) { "世界包缺少 LevelDB CURRENT" }
-            val hasManifest = zip.entries().asSequence().any { it.name.startsWith("db/MANIFEST-") }
-            require(hasManifest) { "世界包缺少 LevelDB MANIFEST" }
+    private class CountingOutputStream(output: OutputStream) : FilterOutputStream(output) {
+        var bytesWritten: Long = 0L
+            private set
+
+        override fun write(value: Int) {
+            out.write(value)
+            bytesWritten++
+        }
+
+        override fun write(buffer: ByteArray, offset: Int, length: Int) {
+            out.write(buffer, offset, length)
+            bytesWritten += length
         }
     }
 
