@@ -578,7 +578,7 @@ private fun MapScreen(
     var coordinateQuery by rememberSaveable { mutableStateOf("39.9, 116.4") }
     var loading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf("") }
-    var show3d by rememberSaveable { mutableStateOf(true) }
+    var show3d by rememberSaveable { mutableStateOf(false) }
 
     DisposableEffect(map) {
         if (map == null) {
@@ -657,7 +657,7 @@ private fun MapScreen(
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
                 shape = RoundedCornerShape(10.dp)
             ) {
-                Text(if (show3d) "3D" else "平面", fontSize = 12.sp)
+                Text(if (show3d) "平面" else "3D", fontSize = 12.sp)
             }
         }
 
