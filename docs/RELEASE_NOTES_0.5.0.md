@@ -30,6 +30,9 @@
 - Archive size is an estimate; actual compression varies by generated content.
 - Android Bedrock device-side import and appearance still require real-device verification.
 
+## Build follow-up
+- Fix the structure renderer's missing math import and stone-brick block alias before rebuilding the 0.5.0 APK.
+
 ## Regression coverage
 - Settings/seed JSON round-trip, deterministic terrain and biome selection.
 - Cave/ore generation toggles and seeded features.

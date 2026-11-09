@@ -261,6 +261,13 @@ class BedrockWorldFormatTest {
     }
 
     @Test
+    fun explicitEmptyStructureSelectionRemainsEmptyAfterSaving() {
+        val empty = ProceduralWorldSettings(structureTypes = emptySet())
+        val restored = ProceduralWorldSettings.fromJson(empty.toJson().toString())
+        assertTrue(restored.structureTypes.isEmpty())
+    }
+
+    @Test
     fun proceduralGeneratorProducesDeterministicVariedHeightAndBiomeFields() {
         val settings = ProceduralWorldSettings(seed = 1234567L, biomeCount = 29)
         val first = ProceduralWorldGenerator.heightAt(128, 224, settings)

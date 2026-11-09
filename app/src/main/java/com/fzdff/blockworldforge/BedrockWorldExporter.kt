@@ -21,6 +21,7 @@ import java.util.UUID
 import java.util.zip.Deflater
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import kotlin.math.abs
 import kotlin.math.asin
 import kotlin.math.ceil
 import kotlin.math.cos
@@ -72,6 +73,7 @@ internal object BedrockWorldExporter {
     private const val BUILDING_WALL = 7
     private const val BUILDING_ROOF = 8
     private const val DEEPSLATE = WorldBlockId.DEEPSLATE
+    private const val STONE_BRICKS = WorldBlockId.STONE_BRICKS
     private const val GRANITE = WorldBlockId.GRANITE
     private const val DIORITE = WorldBlockId.DIORITE
     private const val ANDESITE = WorldBlockId.ANDESITE

@@ -90,6 +90,7 @@ internal data class ProceduralWorldSettings(
         fun fromJson(raw: String): ProceduralWorldSettings {
             val json = JSONObject(raw)
             val types = json.optJSONArray("structureTypes") ?: JSONArray()
+            val hasStructureTypes = json.has("structureTypes")
             val structures = buildSet {
                 for (i in 0 until types.length()) add(types.optString(i))
             }
@@ -111,7 +112,7 @@ internal data class ProceduralWorldSettings(
                 enableTrees = json.optBoolean("enableTrees", true),
                 enableStructures = json.optBoolean("enableStructures", true),
                 enableWater = json.optBoolean("enableWater", true),
-                structureTypes = if (structures.isEmpty()) DEFAULT_STRUCTURES else structures
+                structureTypes = if (hasStructureTypes) structures else DEFAULT_STRUCTURES
             ).normalized()
         }
     }
