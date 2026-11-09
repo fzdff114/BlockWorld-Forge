@@ -88,15 +88,33 @@ class BedrockWorldFormatTest {
     @Test
     fun levelDatContainsTargetBedrockNetworkVersionAndClientVersion() {
         val bytes = BedrockWorldExporter.encodeLevelDat("Atlas Test", 12, 70, 34)
-        val text = bytes.toString(Charsets.ISO_8859_1)
-        assertEquals(true, text.contains("MinimumCompatibleClientVersion"))
-        assertEquals(true, text.contains("lastOpenedWithVersion"))
-        assertEquals(true, text.contains("NetworkVersion"))
-        val marker = "NetworkVersion"
-        val offset = text.indexOf(marker)
+        val marker = "NetworkVersion".toByteArray(Charsets.UTF_8)
+        val offset = indexOfBytes(bytes, marker)
         assertEquals(true, offset >= 0)
-        val valueOffset = offset + marker.length
-        assertEquals(2193, readIntLE(bytes, valueOffset))
+        val valueOffset = offset + marker.size
+        assertArrayEquals(
+            byteArrayOf(0x91.toByte(), 0x08, 0x00, 0x00),
+            bytes.copyOfRange(valueOffset, valueOffset + 4)
+        )
+
+        val metadata = bytes.toString(Charsets.ISO_8859_1)
+        assertEquals(true, metadata.contains("MinimumCompatibleClientVersion"))
+        assertEquals(true, metadata.contains("lastOpenedWithVersion"))
+    }
+
+    private fun indexOfBytes(haystack: ByteArray, needle: ByteArray): Int {
+        if (needle.isEmpty()) return 0
+        for (start in 0..haystack.size - needle.size) {
+            var matches = true
+            for (index in needle.indices) {
+                if (haystack[start + index] != needle[index]) {
+                    matches = false
+                    break
+                }
+            }
+            if (matches) return start
+        }
+        return -1
     }
 
     private fun readIntLE(bytes: ByteArray, offset: Int): Int {
