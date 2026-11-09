@@ -42,6 +42,27 @@ class BedrockWorldFormatTest {
     }
 
     @Test
+    fun levelDatUsesInfiniteGeneratorAndNotFlatPreset() {
+        val bytes = BedrockWorldExporter.encodeLevelDat("Atlas Terrain", 20, 80, 20)
+        val marker = "Generator".toByteArray(Charsets.UTF_8)
+        val offset = indexOfBytes(bytes, marker)
+        assertTrue(offset >= 0)
+        assertEquals(
+            BedrockWorldExporter.WORLD_GENERATOR_INFINITE,
+            readIntLE(bytes, offset + marker.size)
+        )
+        assertEquals(false, bytes.toString(Charsets.ISO_8859_1).contains("FlatWorldLayers"))
+    }
+
+    @Test
+    fun worldSurfaceHeightChangesWithRealElevationSamples() {
+        val low = BedrockWorldExporter.surfaceYForElevation(20.0, 2.0)
+        val high = BedrockWorldExporter.surfaceYForElevation(120.0, 2.0)
+        assertTrue(high > low)
+        assertEquals(50, high - low)
+    }
+
+    @Test
     fun terrariumElevationDecoderUsesMapzenEncoding() {
         assertEquals(0.0, decodeTerrariumElevation(128, 0, 0), 0.0001)
         assertEquals(128.5, decodeTerrariumElevation(128, 128, 128), 0.0001)

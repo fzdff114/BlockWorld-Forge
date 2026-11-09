@@ -367,6 +367,11 @@ private fun AtlasApp(mapView: MapView, map: MapLibreMap?) {
                             elevationGrid = null
                         }
                     },
+                    onSetPoints = { points ->
+                        selectedPoints.clear()
+                        selectedPoints.addAll(points)
+                        elevationGrid = null
+                    },
                     onUndo = {
                         if (selectedPoints.isNotEmpty()) selectedPoints.removeAt(selectedPoints.lastIndex)
                         elevationGrid = null
@@ -568,6 +573,7 @@ private fun MapScreen(
     selectedPoints: List<GeoCoordinate>,
     elevationGrid: ElevationGrid?,
     onAddPoint: (GeoCoordinate) -> Unit,
+    onSetPoints: (List<GeoCoordinate>) -> Unit,
     onUndo: () -> Unit,
     onClear: () -> Unit,
     onElevationReady: (ElevationGrid) -> Unit,
@@ -575,18 +581,50 @@ private fun MapScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var coordinateQuery by rememberSaveable { mutableStateOf("39.9, 116.4") }
+    var coordinateQuery by rememberSaveable { mutableStateOf("深圳") }
+    var locating by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
+    var captureStatus by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf("") }
     var show3d by rememberSaveable { mutableStateOf(false) }
+    var selectionMode by rememberSaveable { mutableStateOf("矩形") }
+    var rectangleFirstCorner by remember { mutableStateOf<GeoCoordinate?>(null) }
 
-    DisposableEffect(map) {
+    DisposableEffect(map, selectionMode, rectangleFirstCorner) {
         if (map == null) {
             onDispose { }
         } else {
             val listener = MapLibreMap.OnMapClickListener { location ->
-                if (selectedPoints.size < 50) {
-                    onAddPoint(GeoCoordinate(location.latitude, location.longitude))
+                val clicked = GeoCoordinate(location.latitude, location.longitude)
+                if (selectionMode == "矩形") {
+                    val first = rectangleFirstCorner
+                    if (first == null) {
+                        rectangleFirstCorner = clicked
+                        onSetPoints(listOf(clicked))
+                        errorMessage = "已记录第一个角点，再点矩形对角位置"
+                    } else {
+                        val south = min(first.latitude, clicked.latitude)
+                        val north = max(first.latitude, clicked.latitude)
+                        val west = min(first.longitude, clicked.longitude)
+                        val east = max(first.longitude, clicked.longitude)
+                        if (haversineMeters(south, west, north, east) < 30.0) {
+                            errorMessage = "矩形范围太小，请选择更远的对角点"
+                        } else {
+                            onSetPoints(
+                                listOf(
+                                    GeoCoordinate(north, west),
+                                    GeoCoordinate(north, east),
+                                    GeoCoordinate(south, east),
+                                    GeoCoordinate(south, west)
+                                )
+                            )
+                            errorMessage = ""
+                            rectangleFirstCorner = null
+                        }
+                    }
+                } else if (selectedPoints.size < 50) {
+                    onAddPoint(clicked)
+                    errorMessage = ""
                 } else {
                     android.widget.Toast.makeText(context, "最多选择 50 个边界点", android.widget.Toast.LENGTH_SHORT).show()
                 }
@@ -597,7 +635,7 @@ private fun MapScreen(
         }
     }
 
-    LaunchedEffect(map, selectedPoints.size) {
+    LaunchedEffect(map, selectedPoints.toList()) {
         if (map != null) updateSelectionOverlay(map, selectedPoints)
     }
 
@@ -616,29 +654,55 @@ private fun MapScreen(
                 modifier = Modifier.weight(1f),
                 singleLine = true,
                 textStyle = MaterialTheme.typography.bodyMedium,
-                placeholder = { Text("纬度, 经度", fontSize = 12.sp) },
+                placeholder = { Text("地点名称或 纬度, 经度", fontSize = 12.sp) },
                 shape = RoundedCornerShape(10.dp)
             )
             FilledTonalButton(
                 onClick = {
-                    val values = coordinateQuery.split(',', '，').mapNotNull { it.trim().toDoubleOrNull() }
-                    if (values.size == 2 && values[0] in -85.0..85.0 && values[1] in -180.0..180.0) {
-                        val camera = CameraPosition.Builder()
-                            .target(LatLng(values[0], values[1]))
-                            .zoom(16.0)
-                            .tilt(if (show3d) 55.0 else 0.0)
-                            .build()
-                        map?.animateCamera(CameraUpdateFactory.newCameraPosition(camera))
+                    val query = coordinateQuery.trim()
+                    if (query.isBlank()) {
+                        android.widget.Toast.makeText(context, "输入地点名称或坐标", android.widget.Toast.LENGTH_SHORT).show()
                     } else {
-                        android.widget.Toast.makeText(context, "坐标格式为：纬度, 经度", android.widget.Toast.LENGTH_SHORT).show()
+                        locating = true
+                        scope.launch {
+                            try {
+                                val target = withContext(Dispatchers.IO) {
+                                    val values = query.split(',', '，').mapNotNull { it.trim().toDoubleOrNull() }
+                                    if (values.size == 2 && values[0] in -85.0..85.0 && values[1] in -180.0..180.0) {
+                                        GeoCoordinate(values[0], values[1])
+                                    } else {
+                                        geocodePlace(query)
+                                    }
+                                }
+                                val camera = CameraPosition.Builder()
+                                    .target(LatLng(target.latitude, target.longitude))
+                                    .zoom(16.0)
+                                    .tilt(if (show3d) 55.0 else 0.0)
+                                    .build()
+                                map?.animateCamera(CameraUpdateFactory.newCameraPosition(camera))
+                            } catch (error: Exception) {
+                                android.widget.Toast.makeText(
+                                    context,
+                                    error.localizedMessage ?: "没有找到该地点",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                            } finally {
+                                locating = false
+                            }
+                        }
                     }
                 },
+                enabled = !locating,
                 contentPadding = PaddingValues(horizontal = 13.dp, vertical = 10.dp),
                 shape = RoundedCornerShape(10.dp)
             ) {
-                Icon(Icons.Outlined.MyLocation, contentDescription = null, modifier = Modifier.size(17.dp))
+                if (locating) {
+                    CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.Outlined.MyLocation, contentDescription = null, modifier = Modifier.size(17.dp))
+                }
                 Spacer(Modifier.width(4.dp))
-                Text("定位", fontSize = 12.sp)
+                Text(if (locating) "搜索中" else "定位", fontSize = 12.sp)
             }
             FilledTonalButton(
                 onClick = {
@@ -694,7 +758,12 @@ private fun MapScreen(
                 shape = RoundedCornerShape(8.dp)
             ) {
                 Text(
-                    "点击地图添加边界点",
+                    if (selectionMode == "矩形") {
+                        if (rectangleFirstCorner == null) "矩形模式：依次点击两个对角点"
+                        else "已选第一个角点：再点击对角位置"
+                    } else {
+                        "多边形模式：依次点击边界点"
+                    },
                     Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
                     fontSize = 10.sp,
                     color = Ink
@@ -714,14 +783,64 @@ private fun MapScreen(
                 verticalArrangement = Arrangement.spacedBy(7.dp)
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("边界点 ${selectedPoints.size}/50", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Ink)
+                    Text(
+                        if (selectionMode == "矩形") "矩形两点圈选" else "边界点 ${selectedPoints.size}/50",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Ink
+                    )
                     Spacer(Modifier.weight(1f))
-                    TextButton(onClick = onUndo, enabled = selectedPoints.isNotEmpty(), contentPadding = PaddingValues(horizontal = 8.dp)) {
+                    TextButton(
+                        onClick = {
+                            if (selectionMode == "矩形" && rectangleFirstCorner != null) {
+                                rectangleFirstCorner = null
+                                onClear()
+                                errorMessage = "已取消第一个角点"
+                            } else if (selectionMode == "多边形") {
+                                onUndo()
+                            } else {
+                                onClear()
+                            }
+                        },
+                        enabled = rectangleFirstCorner != null || selectedPoints.isNotEmpty(),
+                        contentPadding = PaddingValues(horizontal = 8.dp)
+                    ) {
                         Text("撤销", fontSize = 11.sp)
                     }
-                    TextButton(onClick = onClear, enabled = selectedPoints.isNotEmpty(), contentPadding = PaddingValues(horizontal = 8.dp)) {
+                    TextButton(
+                        onClick = {
+                            rectangleFirstCorner = null
+                            errorMessage = ""
+                            onClear()
+                        },
+                        enabled = selectedPoints.isNotEmpty() || rectangleFirstCorner != null,
+                        contentPadding = PaddingValues(horizontal = 8.dp)
+                    ) {
                         Text("清空", fontSize = 11.sp)
                     }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    FilterChip(
+                        selected = selectionMode == "矩形",
+                        onClick = {
+                            selectionMode = "矩形"
+                            rectangleFirstCorner = null
+                            errorMessage = ""
+                            onClear()
+                        },
+                        label = { Text("两点矩形", fontSize = 11.sp) }
+                    )
+                    FilterChip(
+                        selected = selectionMode == "多边形",
+                        onClick = {
+                            selectionMode = "多边形"
+                            rectangleFirstCorner = null
+                            errorMessage = ""
+                            onClear()
+                        },
+                        label = { Text("多边形", fontSize = 11.sp) }
+                    )
+                    Spacer(Modifier.weight(1f))
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -732,15 +851,27 @@ private fun MapScreen(
                             errorMessage = ""
                             scope.launch {
                                 try {
-                                    val result = withContext(Dispatchers.IO) { fetchElevationGrid(snapshot) }
+                                    captureStatus = "准备下载高程瓦片…"
+                                    val result = withContext(Dispatchers.IO) {
+                                        fetchElevationGrid(snapshot) { phase, completed, total ->
+                                            scope.launch {
+                                                captureStatus = if (total > 1) {
+                                                    phase + " " + completed + "/" + total
+                                                } else {
+                                                    phase
+                                                }
+                                            }
+                                        }
+                                    }
                                     onElevationReady(result)
                                     if (result.buildingError != null) {
                                         errorMessage = "地形已采集；建筑数据未取得：" + result.buildingError
                                     }
-                                } catch (_: Exception) {
-                                    errorMessage = "高程数据获取失败，请检查网络后重试"
+                                } catch (error: Exception) {
+                                    errorMessage = "采集失败：" + (error.localizedMessage ?: "请检查网络后重试")
                                 } finally {
                                     loading = false
+                                    captureStatus = ""
                                 }
                             }
                         },
@@ -756,7 +887,12 @@ private fun MapScreen(
                             Icon(Icons.Outlined.Terrain, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(5.dp))
                         }
-                        Text(if (loading) "采集中" else "采集地形+建筑", fontSize = 12.sp)
+                        Text(
+                            if (loading) captureStatus.ifBlank { "采集中" } else "采集地形+建筑",
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                     Button(
                         onClick = onSaveRegion,
@@ -798,7 +934,7 @@ private fun MapScreen(
                     Text(errorMessage, color = MaterialTheme.colorScheme.error, fontSize = 10.sp)
                 }
                 Text(
-                    "OpenFreeMap © OpenMapTiles · OpenStreetMap contributors (ODbL) · DEM © Mapzen",
+                    "OpenFreeMap © OpenMapTiles · OpenStreetMap / Nominatim · DEM © Mapzen",
                     fontSize = 9.sp,
                     color = Muted
                 )
@@ -920,6 +1056,34 @@ private fun isInsidePolygon(point: GeoCoordinate, polygon: List<GeoCoordinate>):
     return inside
 }
 
+private fun geocodePlace(query: String): GeoCoordinate {
+    val encoded = URLEncoder.encode(query, "UTF-8")
+    val endpoint = URL("https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=$encoded")
+    val connection = (endpoint.openConnection() as HttpURLConnection).apply {
+        requestMethod = "GET"
+        connectTimeout = 10000
+        readTimeout = 15000
+        setRequestProperty("Accept", "application/json")
+        setRequestProperty("User-Agent", "Atlas-Android/0.4.1 (https://github.com/fzdff114/BlockWorld-Forge)")
+    }
+    try {
+        val status = connection.responseCode
+        if (status !in 200..299) throw IOException("地点搜索失败 HTTP $status")
+        val results = JSONArray(connection.inputStream.bufferedReader().use { it.readText() })
+        val first = results.optJSONObject(0) ?: throw IOException("没有找到这个地点，请换一个名称")
+        val latitude = first.optString("lat").toDoubleOrNull()
+            ?: throw IOException("地点坐标无效")
+        val longitude = first.optString("lon").toDoubleOrNull()
+            ?: throw IOException("地点坐标无效")
+        if (latitude !in -85.0..85.0 || longitude !in -180.0..180.0) {
+            throw IOException("地点坐标超出地图范围")
+        }
+        return GeoCoordinate(latitude, longitude)
+    } finally {
+        connection.disconnect()
+    }
+}
+
 private data class TerrariumPixel(
     val row: Int,
     val column: Int,
@@ -957,7 +1121,8 @@ internal fun terrariumTilePixelIndex(pixel256: Int, tileDimension: Int): Int {
 }
 
 private fun chooseTerrariumZoom(west: Double, east: Double, south: Double, north: Double): Int {
-    for (zoom in 15 downTo 8) {
+    // Zoom 14 is enough for a ~30 m terrain grid; avoid downloading over-zoomed tiles.
+    for (zoom in 14 downTo 8) {
         val corners = listOf(
             terrariumTilePosition(west, north, zoom),
             terrariumTilePosition(east, north, zoom),
@@ -978,7 +1143,7 @@ private fun downloadTerrariumTile(x: Int, y: Int, zoom: Int): Bitmap {
         connectTimeout = 20000
         readTimeout = 30000
         setRequestProperty("Accept", "image/png")
-        setRequestProperty("User-Agent", "Atlas-Android/0.4.0 (real-world Bedrock map)")
+        setRequestProperty("User-Agent", "Atlas-Android/0.4.1 (real-world Bedrock map)")
     }
     try {
         val status = connection.responseCode
@@ -1006,10 +1171,10 @@ private fun parseOsmHeight(tags: JSONObject, key: String): Double? {
 }
 
 private fun fetchOsmBuildings(west: Double, east: Double, south: Double, north: Double): List<OsmBuilding> {
-    val query = "[out:json][timeout:60][maxsize:67108864];(" +
+    val query = "[out:json][timeout:25][maxsize:33554432];(" +
         "way[\"building\"]($south,$west,$north,$east);" +
         "relation[\"building\"]($south,$west,$north,$east);" +
-        ");out tags geom;"
+        ");out tags geom qt;"
     val endpoints = listOf(
         "https://overpass-api.de/api/interpreter",
         "https://overpass.kumi.systems/api/interpreter"
@@ -1019,11 +1184,11 @@ private fun fetchOsmBuildings(west: Double, east: Double, south: Double, north: 
         val connection = (URL(endpointUrl).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             doOutput = true
-            connectTimeout = 20000
-            readTimeout = 90000
+            connectTimeout = 12000
+            readTimeout = 35000
             setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
             setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "Atlas-Android/0.4.0 (OpenStreetMap building import)")
+            setRequestProperty("User-Agent", "Atlas-Android/0.4.1 (OpenStreetMap building import)")
         }
         try {
             val request = ("data=" + URLEncoder.encode(query, "UTF-8")).toByteArray(Charsets.UTF_8)
@@ -1089,7 +1254,10 @@ private fun fetchOsmBuildings(west: Double, east: Double, south: Double, north: 
     throw IOException(lastError?.localizedMessage ?: "OSM 建筑数据暂不可用")
 }
 
-private fun fetchElevationGrid(boundary: List<GeoCoordinate>): ElevationGrid {
+private fun fetchElevationGrid(
+    boundary: List<GeoCoordinate>,
+    onProgress: (String, Int, Int) -> Unit = { _, _, _ -> }
+): ElevationGrid {
     require(boundary.size >= 3) { "At least three boundary points are required" }
     val south = boundary.minOf { it.latitude }
     val north = boundary.maxOf { it.latitude }
@@ -1100,9 +1268,10 @@ private fun fetchElevationGrid(boundary: List<GeoCoordinate>): ElevationGrid {
     val widthMeters = haversineMeters(centerLatitude, west, centerLatitude, east)
     val depthMeters = haversineMeters(south, centerLongitude, north, centerLongitude)
 
-    // Sample a 20 m grid, capped at 512 × 512 to bound project size and RAM.
-    val columns = ceil(widthMeters / 20.0).toInt().coerceIn(2, 384)
-    val rows = ceil(depthMeters / 20.0).toInt().coerceIn(2, 512)
+    // Source data is mainly ~30 m SRTM away from higher-resolution regional datasets.
+    // A 30 m grid avoids spending time on oversampling the same native elevation cells.
+    val columns = ceil(widthMeters / 30.0).toInt().coerceIn(2, 320)
+    val rows = ceil(depthMeters / 30.0).toInt().coerceIn(2, 320)
     val resolutionMeters = max(widthMeters / columns, depthMeters / rows)
     val zoom = chooseTerrariumZoom(west, east, south, north)
     val matrix = MutableList(rows) { MutableList<Double?>(columns) { null } }
@@ -1122,12 +1291,21 @@ private fun fetchElevationGrid(boundary: List<GeoCoordinate>): ElevationGrid {
 
     val tileKeys = pixels.map { it.tileX to it.tileY }.distinct()
     if (tileKeys.size > 64) throw IOException("当前区域需要下载过多 DEM 瓦片，请缩小圈选范围")
-    val executor = Executors.newFixedThreadPool(4)
+    // Fetch OSM data in parallel with terrain tiles instead of waiting for two serial network phases.
+    val executor = Executors.newFixedThreadPool(8)
     try {
+        val buildingsFuture = executor.submit(Callable {
+            try {
+                fetchOsmBuildings(west, east, south, north) to null
+            } catch (error: Exception) {
+                emptyList<OsmBuilding>() to (error.localizedMessage ?: "建筑数据服务不可用")
+            }
+        })
         val samplesByTile = pixels.groupBy { it.tileX to it.tileY }
         val allValues = ArrayList<Double>(pixels.size)
-        // Keep at most four decoded PNG tiles alive at once on mobile devices.
-        for (tileBatch in tileKeys.chunked(4)) {
+        var completedTiles = 0
+        // Eight downloads overlap; each decoded bitmap is released immediately after sampling.
+        for (tileBatch in tileKeys.chunked(8)) {
             val futures = tileBatch.map { key ->
                 key to executor.submit(Callable { downloadTerrariumTile(key.first, key.second, zoom) })
             }
@@ -1152,14 +1330,14 @@ private fun fetchElevationGrid(boundary: List<GeoCoordinate>): ElevationGrid {
                 } finally {
                     bitmap.recycle()
                 }
+                completedTiles++
+                onProgress("下载高程瓦片", completedTiles, tileKeys.size)
             }
         }
         if (allValues.isEmpty()) throw IOException("DEM 瓦片没有返回有效高程数据")
-        val buildingsAndError = try {
-            fetchOsmBuildings(west, east, south, north) to null
-        } catch (error: Exception) {
-            emptyList<OsmBuilding>() to (error.localizedMessage ?: "建筑数据服务不可用")
-        }
+        onProgress("整理建筑轮廓", 0, 1)
+        val buildingsAndError = buildingsFuture.get()
+        onProgress("采集完成", 1, 1)
         return ElevationGrid(
             rows = rows,
             columns = columns,
