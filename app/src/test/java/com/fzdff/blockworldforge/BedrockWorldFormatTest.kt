@@ -77,6 +77,28 @@ class BedrockWorldFormatTest {
         }
     }
 
+    @Test
+    fun bedrockPaletteIncludesRequiredInfiniburnState() {
+        val encoded = BedrockWorldExporter.encodePaletteEntry(1)
+        val text = encoded.toString(Charsets.ISO_8859_1)
+        assertEquals(true, text.contains("minecraft:bedrock"))
+        assertEquals(true, text.contains("infiniburn_bit"))
+    }
+
+    @Test
+    fun levelDatContainsTargetBedrockNetworkVersionAndClientVersion() {
+        val bytes = BedrockWorldExporter.encodeLevelDat("Atlas Test", 12, 70, 34)
+        val text = bytes.toString(Charsets.ISO_8859_1)
+        assertEquals(true, text.contains("MinimumCompatibleClientVersion"))
+        assertEquals(true, text.contains("lastOpenedWithVersion"))
+        assertEquals(true, text.contains("NetworkVersion"))
+        val marker = "NetworkVersion"
+        val offset = text.indexOf(marker)
+        assertEquals(true, offset >= 0)
+        val valueOffset = offset + marker.length + 1
+        assertEquals(2193, readIntLE(bytes, valueOffset))
+    }
+
     private fun readIntLE(bytes: ByteArray, offset: Int): Int {
         return (bytes[offset].toInt() and 0xFF) or
             ((bytes[offset + 1].toInt() and 0xFF) shl 8) or
