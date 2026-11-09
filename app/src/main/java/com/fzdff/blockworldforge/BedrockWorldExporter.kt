@@ -71,6 +71,44 @@ internal object BedrockWorldExporter {
     private const val WATER = 6
     private const val BUILDING_WALL = 7
     private const val BUILDING_ROOF = 8
+    private const val DEEPSLATE = WorldBlockId.DEEPSLATE
+    private const val GRANITE = WorldBlockId.GRANITE
+    private const val DIORITE = WorldBlockId.DIORITE
+    private const val ANDESITE = WorldBlockId.ANDESITE
+    private const val GRAVEL = WorldBlockId.GRAVEL
+    private const val CLAY = WorldBlockId.CLAY
+    private const val SNOW_BLOCK = WorldBlockId.SNOW_BLOCK
+    private const val SANDSTONE = WorldBlockId.SANDSTONE
+    private const val RED_SAND = WorldBlockId.RED_SAND
+    private const val RED_SANDSTONE = WorldBlockId.RED_SANDSTONE
+    private const val PODZOL = WorldBlockId.PODZOL
+    private const val MYCELIUM = WorldBlockId.MYCELIUM
+    private const val COARSE_DIRT = WorldBlockId.COARSE_DIRT
+    private const val MUD = WorldBlockId.MUD
+    private const val NETHERRACK = WorldBlockId.NETHERRACK
+    private const val CALCITE = WorldBlockId.CALCITE
+    private const val PACKED_ICE = WorldBlockId.PACKED_ICE
+    private const val ICE = WorldBlockId.ICE
+    private const val TUFF = WorldBlockId.TUFF
+    private const val OBSIDIAN = WorldBlockId.OBSIDIAN
+    private const val OAK_LOG = WorldBlockId.OAK_LOG
+    private const val OAK_LEAVES = WorldBlockId.OAK_LEAVES
+    private const val COAL_ORE = WorldBlockId.COAL_ORE
+    private const val IRON_ORE = WorldBlockId.IRON_ORE
+    private const val COPPER_ORE = WorldBlockId.COPPER_ORE
+    private const val GOLD_ORE = WorldBlockId.GOLD_ORE
+    private const val REDSTONE_ORE = WorldBlockId.REDSTONE_ORE
+    private const val LAPIS_ORE = WorldBlockId.LAPIS_ORE
+    private const val DIAMOND_ORE = WorldBlockId.DIAMOND_ORE
+    private const val EMERALD_ORE = WorldBlockId.EMERALD_ORE
+    private const val MOSSY_STONE_BRICKS = WorldBlockId.MOSSY_STONE_BRICKS
+    private const val CRACKED_STONE_BRICKS = WorldBlockId.CRACKED_STONE_BRICKS
+    private const val CHISELED_SANDSTONE = WorldBlockId.CHISELED_SANDSTONE
+    private const val OBSIDIAN_CRYING = WorldBlockId.OBSIDIAN_CRYING
+    private const val GOLD_BLOCK = WorldBlockId.GOLD_BLOCK
+    private const val MOSSY_COBBLESTONE = WorldBlockId.MOSSY_COBBLESTONE
+    private const val COBBLESTONE = WorldBlockId.COBBLESTONE
+    private const val GLOWSTONE = WorldBlockId.GLOWSTONE
 
     private data class Point(val longitude: Double, val latitude: Double)
     private data class BlockPoint(val x: Double, val z: Double)
@@ -102,7 +140,8 @@ internal object BedrockWorldExporter {
         val minimum: Double,
         val maximum: Double,
         val widthMeters: Double,
-        val depthMeters: Double
+        val depthMeters: Double,
+        val proceduralSettings: ProceduralWorldSettings? = null
     )
 
     internal data class GridSize(val width: Int, val depth: Int)
@@ -339,6 +378,20 @@ internal object BedrockWorldExporter {
 
     private fun parseRegion(raw: String): TerrainInput {
         val root = JSONObject(raw)
+        if (root.optString("format") == "blockworld-procedural-v1") {
+            val settings = ProceduralWorldSettings.fromJson(raw)
+            val size = settings.worldSize
+            return TerrainInput(
+                polygon = listOf(Point(0.0, 1.0), Point(1.0, 1.0), Point(1.0, 0.0), Point(0.0, 0.0)),
+                west = 0.0, east = 1.0, south = 0.0, north = 1.0,
+                rows = 2, columns = 2,
+                values = arrayOf(0.0, 0.0, 0.0, 0.0),
+                buildings = emptyList(),
+                minimum = -42.0, maximum = 196.0,
+                widthMeters = size.toDouble(), depthMeters = size.toDouble(),
+                proceduralSettings = settings
+            )
+        }
         require(root.optString("format") == "atlas-region-heightmap-v1") { "项目中没有可识别的地形数据" }
 
         val boundaryJson = root.optJSONArray("boundaryLonLat")
@@ -456,9 +509,12 @@ internal object BedrockWorldExporter {
             input.maximum,
             verticalExaggeration
         )
-        val worldFloorY = terrainFloorY(input.minimum, input.maximum, metersPerBlock, verticalExaggeration)
+        val proceduralSettings = input.proceduralSettings
+        val worldFloorY = if (proceduralSettings != null) MIN_Y else
+            terrainFloorY(input.minimum, input.maximum, metersPerBlock, verticalExaggeration)
+        val seaDatum = proceduralSettings?.let { it.waterLevel - 8.0 } ?: 0.0
         val seaLevelY = (
-            SEA_LEVEL + ((0.0 - input.minimum) / verticalScale).roundToInt()
+            SEA_LEVEL + ((seaDatum - input.minimum) / verticalScale).roundToInt()
         ).coerceIn(MIN_Y + 1, MAX_Y - 1)
         val indexedBuildings = indexBuildings(input, size, verticalScale)
         val sink = DatabaseBatchSink(db)
@@ -486,6 +542,7 @@ internal object BedrockWorldExporter {
                             val heightMap = IntArray(256) { worldFloorY }
                             val surfaceYMap = IntArray(256) { worldFloorY }
                             val hasSurface = BooleanArray(256)
+                            val biomeIdsForChunk = IntArray(256) { 1 }
                             var columnsInChunk = 0
 
                             for (localZ in 0 until 16) {
@@ -496,24 +553,44 @@ internal object BedrockWorldExporter {
                                     if (worldX >= size.width) continue
                                     val point = coordinateAt(input, size, worldX, worldZ)
                                     if (!insidePolygon(point, input.polygon)) continue
-                                    val elevation = sampleElevation(input, point)
+                                    val elevation = if (proceduralSettings != null) {
+                                        ProceduralWorldGenerator.heightAt(worldX, worldZ, proceduralSettings)
+                                    } else {
+                                        sampleElevation(input, point)
+                                    }
                                     val surfaceY = surfaceYForElevation(elevation, input.minimum, verticalScale)
+                                    val biome = proceduralSettings?.let {
+                                        ProceduralWorldGenerator.biomeAt(worldX, worldZ, elevation, it)
+                                    }
+                                    val columnIndex = localZ * 16 + localX
+                                    biomeIdsForChunk[columnIndex] = biome?.bedrockId ?: 1
 
                                     setBlock(sections, localX, worldFloorY, localZ, BEDROCK)
                                     for (y in worldFloorY + 1 until surfaceY - 3) {
-                                        setBlock(sections, localX, y, localZ, STONE)
+                                        var block = if (proceduralSettings != null && y < -8) DEEPSLATE else STONE
+                                        if (proceduralSettings != null && proceduralSettings.enableCaves &&
+                                            ProceduralWorldGenerator.caveAt(worldX, y, worldZ, proceduralSettings)
+                                        ) {
+                                            block = AIR
+                                        } else if (proceduralSettings != null && proceduralSettings.enableOres) {
+                                            val ore = ProceduralWorldGenerator.oreAt(
+                                                worldX, y, worldZ, biome ?: ProceduralWorldGenerator.BIOMES.first(), proceduralSettings
+                                            )
+                                            if (ore != WorldBlockId.STONE) block = ore
+                                        }
+                                        setBlock(sections, localX, y, localZ, block)
                                     }
-                                    for (y in surfaceY - 3 until surfaceY) {
-                                        setBlock(sections, localX, y, localZ, DIRT)
-                                    }
-                                    setBlock(sections, localX, surfaceY, localZ, if (elevation < 0.0) SAND else GRASS)
-                                    val columnIndex = localZ * 16 + localX
+                                    val soil = biome?.soilBlock ?: DIRT
+                                    val top = biome?.surfaceBlock ?: if (elevation < 0.0) SAND else GRASS
+                                    for (y in surfaceY - 3 until surfaceY) setBlock(sections, localX, y, localZ, soil)
+                                    setBlock(sections, localX, surfaceY, localZ, top)
                                     surfaceYMap[columnIndex] = surfaceY
                                     hasSurface[columnIndex] = true
-                                    if (elevation < 0.0 && seaLevelY > surfaceY) {
-                                        for (y in surfaceY + 1..seaLevelY) {
-                                            setBlock(sections, localX, y, localZ, WATER)
-                                        }
+                                    val underwater = if (proceduralSettings != null) {
+                                        proceduralSettings.enableWater && elevation < proceduralSettings.waterLevel
+                                    } else elevation < 0.0
+                                    if (underwater && seaLevelY > surfaceY) {
+                                        for (y in surfaceY + 1..seaLevelY) setBlock(sections, localX, y, localZ, WATER)
                                         heightMap[columnIndex] = seaLevelY + 1
                                     } else {
                                         heightMap[columnIndex] = surfaceY + 1
@@ -540,12 +617,23 @@ internal object BedrockWorldExporter {
                                         chunkMaxZ = chunkMaxZ
                                     )
                                 }
+                                if (proceduralSettings != null) {
+                                    applyProceduralTrees(
+                                        sections, heightMap, surfaceYMap, hasSurface,
+                                        input, size, proceduralSettings, verticalScale,
+                                        chunkMinX, chunkMaxX, chunkMinZ, chunkMaxZ
+                                    )
+                                    applyProceduralStructures(
+                                        sections, heightMap, input, size, proceduralSettings, verticalScale,
+                                        chunkMinX, chunkMaxX, chunkMinZ, chunkMaxZ
+                                    )
+                                }
                                 val versionKey = chunkKey(chunkX, chunkZ, TAG_VERSION)
                                 val data3dKey = chunkKey(chunkX, chunkZ, TAG_DATA_3D)
                                 val finalizedKey = chunkKey(chunkX, chunkZ, TAG_FINALIZED)
                                 sink.put(versionKey, byteArrayOf(CHUNK_VERSION.toByte()))
                                 sink.put(finalizedKey, intBytesLE(2))
-                                sink.put(data3dKey, encodeData3D(heightMap))
+                                sink.put(data3dKey, encodeData3D(heightMap, biomeIdsForChunk))
                                 if (firstVersionKey == null) firstVersionKey = versionKey
 
                                 for ((sectionY, blocks) in sections.toSortedMap()) {
@@ -710,6 +798,296 @@ internal object BedrockWorldExporter {
         }
     }
 
+    private fun applyProceduralTrees(
+        sections: MutableMap<Int, IntArray>,
+        heightMap: IntArray,
+        surfaceYMap: IntArray,
+        hasSurface: BooleanArray,
+        input: TerrainInput,
+        size: GridSize,
+        settings: ProceduralWorldSettings,
+        verticalScale: Double,
+        chunkMinX: Int,
+        chunkMaxX: Int,
+        chunkMinZ: Int,
+        chunkMaxZ: Int
+    ) {
+        val cellSize = 7
+        val startCellX = Math.floorDiv(chunkMinX - 8, cellSize)
+        val endCellX = Math.floorDiv(chunkMaxX + 8, cellSize)
+        val startCellZ = Math.floorDiv(chunkMinZ - 8, cellSize)
+        val endCellZ = Math.floorDiv(chunkMaxZ + 8, cellSize)
+        for (cellZ in startCellZ..endCellZ) {
+            for (cellX in startCellX..endCellX) {
+                val candidate = ProceduralWorldGenerator.treeCandidate(cellX, cellZ, settings) ?: continue
+                val x = candidate.first
+                val z = candidate.second
+                if (x !in 2 until size.width - 2 || z !in 2 until size.depth - 2) continue
+                val point = coordinateAt(input, size, x, z)
+                val elevation = ProceduralWorldGenerator.heightAt(x, z, settings)
+                if (settings.enableWater && elevation < settings.waterLevel - 7) continue
+                val y = surfaceYForElevation(elevation, input.minimum, verticalScale)
+                val biome = ProceduralWorldGenerator.biomeAt(x, z, elevation, settings)
+                val profile = ProceduralWorldGenerator.treeProfile(biome, x, z, settings)
+                if (profile.height <= 0 || y + profile.height + 3 >= MAX_Y) continue
+                drawProceduralTree(
+                    sections, heightMap, profile, x, y, z,
+                    chunkMinX, chunkMaxX, chunkMinZ, chunkMaxZ
+                )
+            }
+        }
+    }
+
+    private fun drawProceduralTree(
+        sections: MutableMap<Int, IntArray>,
+        heightMap: IntArray,
+        profile: TreeProfile,
+        x: Int,
+        groundY: Int,
+        z: Int,
+        chunkMinX: Int,
+        chunkMaxX: Int,
+        chunkMinZ: Int,
+        chunkMaxZ: Int
+    ) {
+        fun put(px: Int, py: Int, pz: Int, block: Int, onlyAir: Boolean = false) {
+            if (px !in chunkMinX..chunkMaxX || pz !in chunkMinZ..chunkMaxZ) return
+            if (py !in MIN_Y + 1 until MAX_Y) return
+            val lx = px - chunkMinX
+            val lz = pz - chunkMinZ
+            val existing = getBlock(sections, lx, py, lz)
+            if (onlyAir && existing != AIR && existing != profile.leafBlock) return
+            setBlock(sections, lx, py, lz, block)
+            val index = lz * 16 + lx
+            heightMap[index] = max(heightMap[index], py + 1)
+        }
+
+        val trunkTop = groundY + profile.height
+        for (dy in 1..profile.height) put(x, groundY + dy, z, profile.logBlock)
+        if (profile.shape == "mangrove") {
+            for (direction in listOf(-1, 1)) {
+                for (step in 1..2) {
+                    put(x + direction * step, groundY + 1, z, profile.logBlock)
+                    put(x, groundY + 1, z + direction * step, profile.logBlock)
+                }
+            }
+        }
+
+        val crownBase = when (profile.shape) {
+            "cone", "giant_cone" -> trunkTop - (if (profile.shape == "giant_cone") 7 else 5)
+            "flat" -> trunkTop - 2
+            "umbrella" -> trunkTop - 3
+            else -> trunkTop - 3
+        }
+        for (layerY in crownBase..trunkTop + 1) {
+            val dy = layerY - crownBase
+            val radius = when (profile.shape) {
+                "cone" -> max(1, 3 - dy / 2)
+                "giant_cone" -> max(1, 5 - dy / 2)
+                "flat" -> if (dy == 0) 4 else if (dy == 1) 3 else 2
+                "umbrella" -> if (dy == 0) 4 else if (dy < 3) 3 else 2
+                "wide" -> if (dy == 0) 4 else if (dy < 3) 3 else 2
+                "mangrove" -> if (dy < 2) 3 else 2
+                "mushroom" -> if (dy == 0) 3 else 2
+                else -> max(1, 3 - dy / 2)
+            }
+            for (dx in -radius..radius) {
+                for (dz in -radius..radius) {
+                    val distance = dx * dx + dz * dz
+                    val limit = radius * radius + if (profile.shape == "mushroom") 1 else -1
+                    if (distance > limit) continue
+                    if (profile.shape == "cone" && dy > 1 && distance < 2) continue
+                    if (profile.shape == "mushroom" && dy == 0) continue
+                    put(x + dx, layerY, z + dz, profile.leafBlock, onlyAir = true)
+                }
+            }
+        }
+        if (profile.shape == "mushroom") {
+            for (dx in -3..3) for (dz in -3..3) {
+                if (dx * dx + dz * dz <= 9) put(x + dx, trunkTop + 1, z + dz, profile.leafBlock, onlyAir = true)
+            }
+        }
+    }
+
+    private fun getBlock(sections: Map<Int, IntArray>, localX: Int, y: Int, localZ: Int): Int {
+        val sectionY = Math.floorDiv(y, 16)
+        val localY = Math.floorMod(y, 16)
+        val blocks = sections[sectionY] ?: return AIR
+        return blocks[localX * 256 + localZ * 16 + localY]
+    }
+
+    private fun applyProceduralStructures(
+        sections: MutableMap<Int, IntArray>,
+        heightMap: IntArray,
+        input: TerrainInput,
+        size: GridSize,
+        settings: ProceduralWorldSettings,
+        verticalScale: Double,
+        chunkMinX: Int,
+        chunkMaxX: Int,
+        chunkMinZ: Int,
+        chunkMaxZ: Int
+    ) {
+        val spacing = 112
+        val startCellX = Math.floorDiv(chunkMinX - 24, spacing)
+        val endCellX = Math.floorDiv(chunkMaxX + 24, spacing)
+        val startCellZ = Math.floorDiv(chunkMinZ - 24, spacing)
+        val endCellZ = Math.floorDiv(chunkMaxZ + 24, spacing)
+
+        fun put(x: Int, y: Int, z: Int, block: Int) {
+            if (x !in chunkMinX..chunkMaxX || z !in chunkMinZ..chunkMaxZ ||
+                y !in MIN_Y + 1 until MAX_Y
+            ) return
+            val lx = x - chunkMinX
+            val lz = z - chunkMinZ
+            setBlock(sections, lx, y, lz, block)
+            val column = lz * 16 + lx
+            heightMap[column] = max(heightMap[column], y + 1)
+        }
+
+        for (cellZ in startCellZ..endCellZ) {
+            for (cellX in startCellX..endCellX) {
+                val anchor = ProceduralWorldGenerator.structureAnchor(cellX, cellZ, settings) ?: continue
+                val cx = anchor.x
+                val cz = anchor.z
+                if (cx !in 8 until size.width - 8 || cz !in 8 until size.depth - 8) continue
+                val groundElevation = ProceduralWorldGenerator.heightAt(cx, cz, settings)
+                val water = settings.waterLevel
+                if (anchor.type != "ocean_ruin" && groundElevation < water - 5) continue
+                val surfaceBaseY = surfaceYForElevation(groundElevation, input.minimum, verticalScale) + 1
+                val baseY = when (anchor.type) {
+                    "mineshaft" -> max(MIN_Y + 8, surfaceBaseY - 24)
+                    "stronghold" -> max(MIN_Y + 8, surfaceBaseY - 32)
+                    else -> surfaceBaseY
+                }
+                when (anchor.type) {
+                    "desert_temple" -> {
+                        // Original stepped sandstone pyramid with a recessed central chamber.
+                        for (layer in 0..4) {
+                            val radius = 6 - layer
+                            for (dx in -radius..radius) for (dz in -radius..radius) {
+                                val edge = abs(dx) == radius || abs(dz) == radius
+                                if (edge || layer == 0) put(cx + dx, baseY + layer, cz + dz, SANDSTONE)
+                            }
+                        }
+                        for (y in baseY + 1..baseY + 5) {
+                            for (dx in -2..2) for (dz in -2..2) {
+                                if (abs(dx) == 2 || abs(dz) == 2) put(cx + dx, y, cz + dz, CHISELED_SANDSTONE)
+                            }
+                        }
+                        put(cx, baseY + 2, cz, GOLD_BLOCK)
+                        put(cx - 1, baseY + 2, cz, GOLD_BLOCK)
+                        put(cx + 1, baseY + 2, cz, GOLD_BLOCK)
+                        put(cx, baseY + 2, cz - 1, GOLD_BLOCK)
+                        put(cx, baseY + 2, cz + 1, GOLD_BLOCK)
+                    }
+                    "jungle_temple" -> {
+                        drawStructureHouse(
+                            ::put, cx, baseY, cz, 11, 13, 8,
+                            MOSSY_STONE_BRICKS, STONE_BRICKS, COBBLESTONE
+                        )
+                        for (dx in -4..4 step 4) {
+                            put(cx + dx, baseY + 9, cz - 5, STONE_BRICKS)
+                            put(cx + dx, baseY + 9, cz + 5, STONE_BRICKS)
+                        }
+                    }
+                    "ruined_portal" -> {
+                        for (y in 0..6) for (dx in -2..2) {
+                            val frame = abs(dx) == 2 || y == 0 || y == 6
+                            if (frame && ProceduralWorldGenerator.hash01(cx + dx, y, cz, settings.seed + 7001) > 0.12) {
+                                put(cx + dx, baseY + y, cz, if ((dx + y) % 4 == 0) OBSIDIAN_CRYING else WorldBlockId.OBSIDIAN)
+                            }
+                        }
+                        for (dx in -4..4) {
+                            put(cx + dx, baseY, cz + 2, NETHERRACK)
+                            if (dx % 2 == 0) put(cx + dx, baseY + 1, cz + 2, NETHERRACK)
+                        }
+                        put(cx + 3, baseY + 1, cz + 1, GLOWSTONE)
+                    }
+                    "village" -> {
+                        drawStructureHouse(::put, cx - 7, baseY, cz - 4, 7, 7, 5, OAK_LOG, WorldBlockId.BRICKS, WorldBlockId.COBBLESTONE)
+                        drawStructureHouse(::put, cx + 5, baseY + 1, cz - 2, 7, 7, 5, OAK_LOG, WorldBlockId.BRICKS, WorldBlockId.COBBLESTONE)
+                        drawStructureHouse(::put, cx - 1, baseY, cz + 7, 7, 7, 5, OAK_LOG, WorldBlockId.BRICKS, WorldBlockId.COBBLESTONE)
+                        for (step in -6..6) put(cx + step, baseY, cz + 3, WorldBlockId.GRAVEL)
+                    }
+                    "mineshaft" -> {
+                        // Hollow a walkable tunnel first, then place supports and floor.
+                        for (z in -10..10) {
+                            for (dx in -2..2) for (dy in 1..3) put(cx + dx, baseY + dy, cz + z, AIR)
+                            put(cx, baseY, cz + z, WorldBlockId.GRAVEL)
+                            if (z % 4 == 0) {
+                                put(cx - 2, baseY + 2, cz + z, OAK_LOG)
+                                put(cx + 2, baseY + 2, cz + z, OAK_LOG)
+                                put(cx - 2, baseY + 4, cz + z, OAK_LOG)
+                                put(cx + 2, baseY + 4, cz + z, OAK_LOG)
+                                for (dx in -2..2) put(cx + dx, baseY + 4, cz + z, OAK_LOG)
+                            }
+                        }
+                    }
+                    "stronghold" -> {
+                        // Clear a large chamber so the stone-brick rooms are exposed underground.
+                        for (dx in -8..8) for (dz in -8..8) for (dy in 1..8) {
+                            put(cx + dx, baseY + dy, cz + dz, AIR)
+                        }
+                        drawStructureHouse(::put, cx, baseY, cz, 15, 15, 7, STONE_BRICKS, MOSSY_STONE_BRICKS, CRACKED_STONE_BRICKS)
+                        for (dx in -6..6 step 6) for (dz in -6..6 step 6) {
+                            for (dy in 1..9) put(cx + dx, baseY + dy, cz + dz, STONE_BRICKS)
+                        }
+                        for (dx in -2..2) for (dz in -2..2) put(cx + dx, baseY + 1, cz + dz, WorldBlockId.AMETHYST_BLOCK)
+                    }
+                    "ocean_ruin" -> {
+                        val floor = surfaceYForElevation(groundElevation, input.minimum, verticalScale)
+                        for (dx in -5..5) for (dz in -5..5) {
+                            if (abs(dx) + abs(dz) < 8 && ProceduralWorldGenerator.hash01(cx + dx, 0, cz + dz, settings.seed + 7013) > 0.18) {
+                                put(cx + dx, floor + 1, cz + dz, if ((dx + dz) % 3 == 0) MOSSY_STONE_BRICKS else STONE_BRICKS)
+                            }
+                        }
+                        for (dy in 1..3) {
+                            put(cx - 2, floor + dy, cz, STONE_BRICKS)
+                            put(cx + 2, floor + dy, cz + 1, MOSSY_STONE_BRICKS)
+                        }
+                    }
+                    "watchtower" -> {
+                        for (dx in listOf(-3, 3)) for (dz in listOf(-3, 3)) {
+                            for (dy in 1..11) put(cx + dx, baseY + dy, cz + dz, OAK_LOG)
+                        }
+                        for (dx in -4..4) for (dz in -4..4) {
+                            if (abs(dx) == 4 || abs(dz) == 4 || baseY % 2 == 0) {
+                                put(cx + dx, baseY + 10, cz + dz, STONE_BRICKS)
+                                put(cx + dx, baseY + 12, cz + dz, WorldBlockId.BRICKS)
+                            }
+                        }
+                        for (dy in 11..13) put(cx, baseY + dy, cz, OAK_LOG)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun drawStructureHouse(
+        put: (Int, Int, Int, Int) -> Unit,
+        centerX: Int,
+        baseY: Int,
+        centerZ: Int,
+        width: Int,
+        depth: Int,
+        height: Int,
+        wall: Int,
+        roof: Int,
+        floor: Int
+    ) {
+        val halfX = width / 2
+        val halfZ = depth / 2
+        for (dx in -halfX..halfX) for (dz in -halfZ..halfZ) {
+            put(centerX + dx, baseY, centerZ + dz, floor)
+            for (dy in 1..height) {
+                val boundary = abs(dx) == halfX || abs(dz) == halfZ
+                if (boundary) put(centerX + dx, baseY + dy, centerZ + dz, if (dy == height) roof else wall)
+            }
+            if (abs(dx) == halfX || abs(dz) == halfZ) put(centerX + dx, baseY + height + 1, centerZ + dz, roof)
+        }
+    }
+
     private fun insideBlockPolygon(x: Double, z: Double, polygon: List<BlockPoint>): Boolean {
         var inside = false
         var j = polygon.lastIndex
@@ -731,6 +1109,13 @@ internal object BedrockWorldExporter {
     }
 
     private fun sampleElevation(input: TerrainInput, point: Point): Double {
+        input.proceduralSettings?.let { settings ->
+            val x = (((point.longitude - input.west) / (input.east - input.west)) * (settings.worldSize - 1))
+                .roundToInt().coerceIn(0, settings.worldSize - 1)
+            val z = (((input.north - point.latitude) / (input.north - input.south)) * (settings.worldSize - 1))
+                .roundToInt().coerceIn(0, settings.worldSize - 1)
+            return ProceduralWorldGenerator.heightAt(x, z, settings)
+        }
         val gx = (((point.longitude - input.west) / (input.east - input.west)) * (input.columns - 1))
             .coerceIn(0.0, (input.columns - 1).toDouble())
         val gy = (((input.north - point.latitude) / (input.north - input.south)) * (input.rows - 1))
@@ -804,13 +1189,47 @@ internal object BedrockWorldExporter {
         blocks[localX * 256 + localZ * 16 + localY] = blockId
     }
 
-    private fun encodeData3D(heightMap: IntArray): ByteArray {
-        val output = ByteArrayOutputStream(540)
-        for (height in heightMap) output.writeShortLE(height)
-        // Uniform plains biome palette: one 4x4 storage, followed by 23 "same as below" sections.
-        output.write(1)
-        output.writeIntLE(1)
-        repeat(23) { output.write(0xFF) }
+    internal fun encodeData3D(heightMap: IntArray): ByteArray =
+        encodeData3D(heightMap, IntArray(256) { 1 })
+
+    internal fun encodeData3D(heightMap: IntArray, biomeIds: IntArray): ByteArray {
+        require(heightMap.size == 256 && biomeIds.size == 256)
+        val output = ByteArrayOutputStream(512 + 24 * 32)
+        for (height in heightMap) output.writeShortLE((height + 64).coerceIn(0, 65535))
+        // Modern Bedrock stores one 3-D biome palette for each of the 24
+        // subchunks (-4 through 19). The index order is XZY: Y changes fastest.
+        repeat(24) {
+            val indices = IntArray(4096)
+            val palette = LinkedHashMap<Int, Int>()
+            for (x in 0 until 16) for (z in 0 until 16) {
+                val biome = biomeIds[z * 16 + x]
+                val paletteIndex = palette.getOrPut(biome) { palette.size }
+                for (y in 0 until 16) {
+                    val index = x * 256 + z * 16 + y
+                    indices[index] = paletteIndex
+                }
+            }
+            if (palette.size == 1) {
+                output.write(1) // palette version 1, zero bits per index
+                output.writeIntLE(palette.keys.first())
+            } else {
+                val bits = bitsForPalette(palette.size)
+                val perWord = 32 / bits
+                output.write((bits shl 1) or 1)
+                var start = 0
+                while (start < indices.size) {
+                    var word = 0
+                    for (slot in 0 until perWord) {
+                        val index = start + slot
+                        if (index < indices.size) word = word or (indices[index] shl (bits * slot))
+                    }
+                    output.writeIntLE(word)
+                    start += perWord
+                }
+                output.writeIntLE(palette.size)
+                palette.keys.forEach { output.writeIntLE(it) }
+            }
+        }
         return output.toByteArray()
     }
 
@@ -857,12 +1276,43 @@ internal object BedrockWorldExporter {
         output.writeCompoundStart("")
         output.writeStringTag("name", blockName(blockId))
         output.writeCompoundStart("states")
-        if (blockId == BEDROCK) output.writeByteTag("infiniburn_bit", 0)
-        if (blockId == WATER) output.writeIntTag("liquid_depth", 0)
+        when {
+            blockId == BEDROCK -> output.writeByteTag("infiniburn_bit", 0)
+            blockId == WATER -> output.writeIntTag("liquid_depth", 0)
+            logSpecies(blockId) != null -> output.writeStringTag("pillar_axis", "y")
+            leafSpecies(blockId) != null -> {
+                output.writeByteTag("persistent_bit", 1)
+                output.writeByteTag("update_bit", 0)
+            }
+        }
         output.writeEnd()
         output.writeIntTag("version", BLOCK_STATE_VERSION)
         output.writeEnd()
         return output.toByteArray()
+    }
+
+    private fun logSpecies(blockId: Int): String? = when (blockId) {
+        WorldBlockId.OAK_LOG -> "oak"
+        WorldBlockId.BIRCH_LOG -> "birch"
+        WorldBlockId.SPRUCE_LOG -> "spruce"
+        WorldBlockId.JUNGLE_LOG -> "jungle"
+        WorldBlockId.ACACIA_LOG -> "acacia"
+        WorldBlockId.DARK_OAK_LOG -> "dark_oak"
+        WorldBlockId.MANGROVE_LOG -> "mangrove"
+        WorldBlockId.CHERRY_LOG -> "cherry"
+        else -> null
+    }
+
+    private fun leafSpecies(blockId: Int): String? = when (blockId) {
+        WorldBlockId.OAK_LEAVES -> "oak"
+        WorldBlockId.BIRCH_LEAVES -> "birch"
+        WorldBlockId.SPRUCE_LEAVES -> "spruce"
+        WorldBlockId.JUNGLE_LEAVES -> "jungle"
+        WorldBlockId.ACACIA_LEAVES -> "acacia"
+        WorldBlockId.DARK_OAK_LEAVES -> "dark_oak"
+        WorldBlockId.MANGROVE_LEAVES -> "mangrove"
+        WorldBlockId.CHERRY_LEAVES -> "cherry"
+        else -> null
     }
 
     private fun blockName(blockId: Int): String = when (blockId) {
@@ -873,8 +1323,85 @@ internal object BedrockWorldExporter {
         GRASS -> "minecraft:grass_block"
         SAND -> "minecraft:sand"
         WATER -> "minecraft:water"
-        BUILDING_WALL -> "minecraft:bricks"
+        BUILDING_WALL -> "minecraft:brick_block"
         BUILDING_ROOF -> "minecraft:stone_bricks"
+        WorldBlockId.DEEPSLATE -> "minecraft:deepslate"
+        WorldBlockId.GRANITE -> "minecraft:granite"
+        WorldBlockId.DIORITE -> "minecraft:diorite"
+        WorldBlockId.ANDESITE -> "minecraft:andesite"
+        WorldBlockId.GRAVEL -> "minecraft:gravel"
+        WorldBlockId.CLAY -> "minecraft:clay"
+        WorldBlockId.SNOW_BLOCK -> "minecraft:snow"
+        WorldBlockId.SANDSTONE -> "minecraft:sandstone"
+        WorldBlockId.RED_SAND -> "minecraft:red_sand"
+        WorldBlockId.RED_SANDSTONE -> "minecraft:red_sandstone"
+        WorldBlockId.MOSS_BLOCK -> "minecraft:moss_block"
+        WorldBlockId.PODZOL -> "minecraft:podzol"
+        WorldBlockId.MYCELIUM -> "minecraft:mycelium"
+        WorldBlockId.COARSE_DIRT -> "minecraft:coarse_dirt"
+        WorldBlockId.MUD -> "minecraft:mud"
+        WorldBlockId.NETHERRACK -> "minecraft:netherrack"
+        WorldBlockId.CALCITE -> "minecraft:calcite"
+        WorldBlockId.PACKED_ICE -> "minecraft:packed_ice"
+        WorldBlockId.ICE -> "minecraft:ice"
+        WorldBlockId.TUFF -> "minecraft:tuff"
+        WorldBlockId.OBSIDIAN -> "minecraft:obsidian"
+        WorldBlockId.OAK_LOG -> "minecraft:oak_log"
+        WorldBlockId.BIRCH_LOG -> "minecraft:birch_log"
+        WorldBlockId.SPRUCE_LOG -> "minecraft:spruce_log"
+        WorldBlockId.JUNGLE_LOG -> "minecraft:jungle_log"
+        WorldBlockId.ACACIA_LOG -> "minecraft:acacia_log"
+        WorldBlockId.DARK_OAK_LOG -> "minecraft:dark_oak_log"
+        WorldBlockId.MANGROVE_LOG -> "minecraft:mangrove_log"
+        WorldBlockId.CHERRY_LOG -> "minecraft:cherry_log"
+        WorldBlockId.OAK_LEAVES -> "minecraft:oak_leaves"
+        WorldBlockId.BIRCH_LEAVES -> "minecraft:birch_leaves"
+        WorldBlockId.SPRUCE_LEAVES -> "minecraft:spruce_leaves"
+        WorldBlockId.JUNGLE_LEAVES -> "minecraft:jungle_leaves"
+        WorldBlockId.ACACIA_LEAVES -> "minecraft:acacia_leaves"
+        WorldBlockId.DARK_OAK_LEAVES -> "minecraft:dark_oak_leaves"
+        WorldBlockId.MANGROVE_LEAVES -> "minecraft:mangrove_leaves"
+        WorldBlockId.CHERRY_LEAVES -> "minecraft:cherry_leaves"
+        WorldBlockId.COAL_ORE -> "minecraft:coal_ore"
+        WorldBlockId.IRON_ORE -> "minecraft:iron_ore"
+        WorldBlockId.COPPER_ORE -> "minecraft:copper_ore"
+        WorldBlockId.GOLD_ORE -> "minecraft:gold_ore"
+        WorldBlockId.REDSTONE_ORE -> "minecraft:redstone_ore"
+        WorldBlockId.LAPIS_ORE -> "minecraft:lapis_ore"
+        WorldBlockId.DIAMOND_ORE -> "minecraft:diamond_ore"
+        WorldBlockId.EMERALD_ORE -> "minecraft:emerald_ore"
+        WorldBlockId.DEEPSLATE_COAL_ORE -> "minecraft:deepslate_coal_ore"
+        WorldBlockId.DEEPSLATE_IRON_ORE -> "minecraft:deepslate_iron_ore"
+        WorldBlockId.DEEPSLATE_COPPER_ORE -> "minecraft:deepslate_copper_ore"
+        WorldBlockId.DEEPSLATE_GOLD_ORE -> "minecraft:deepslate_gold_ore"
+        WorldBlockId.DEEPSLATE_REDSTONE_ORE -> "minecraft:deepslate_redstone_ore"
+        WorldBlockId.DEEPSLATE_LAPIS_ORE -> "minecraft:deepslate_lapis_ore"
+        WorldBlockId.DEEPSLATE_DIAMOND_ORE -> "minecraft:deepslate_diamond_ore"
+        WorldBlockId.DEEPSLATE_EMERALD_ORE -> "minecraft:deepslate_emerald_ore"
+        WorldBlockId.AMETHYST_BLOCK -> "minecraft:amethyst_block"
+        WorldBlockId.MOSSY_STONE_BRICKS -> "minecraft:mossy_stone_bricks"
+        WorldBlockId.CRACKED_STONE_BRICKS -> "minecraft:cracked_stone_bricks"
+        WorldBlockId.CHISELED_SANDSTONE -> "minecraft:chiseled_sandstone"
+        WorldBlockId.CUT_SANDSTONE -> "minecraft:cut_sandstone"
+        WorldBlockId.SMOOTH_SANDSTONE -> "minecraft:smooth_sandstone"
+        WorldBlockId.OBSIDIAN_CRYING -> "minecraft:crying_obsidian"
+        WorldBlockId.GOLD_BLOCK -> "minecraft:gold_block"
+        WorldBlockId.COPPER_BLOCK -> "minecraft:copper_block"
+        WorldBlockId.MOSSY_COBBLESTONE -> "minecraft:mossy_cobblestone"
+        WorldBlockId.COBBLESTONE -> "minecraft:cobblestone"
+        WorldBlockId.IRON_BARS -> "minecraft:iron_bars"
+        WorldBlockId.GLOWSTONE -> "minecraft:glowstone"
+        WorldBlockId.GLASS -> "minecraft:glass"
+        WorldBlockId.TERRACOTTA -> "minecraft:terracotta"
+        WorldBlockId.WHITE_TERRACOTTA -> "minecraft:white_terracotta"
+        WorldBlockId.ORANGE_TERRACOTTA -> "minecraft:orange_terracotta"
+        WorldBlockId.RED_TERRACOTTA -> "minecraft:red_terracotta"
+        WorldBlockId.BLUE_ICE -> "minecraft:blue_ice"
+        WorldBlockId.DRIPSTONE_BLOCK -> "minecraft:dripstone_block"
+        WorldBlockId.POINTED_DRIPSTONE -> "minecraft:pointed_dripstone"
+        WorldBlockId.MUSHROOM_BLOCK -> "minecraft:brown_mushroom_block"
+        WorldBlockId.MELON -> "minecraft:melon_block"
+        WorldBlockId.HAY_BLOCK -> "minecraft:hay_block"
         else -> throw IllegalArgumentException("未知方块 ID：" + blockId)
     }
 

@@ -236,6 +236,149 @@ class BedrockWorldFormatTest {
     }
 
     @Test
+    fun proceduralSettingsKeepSeedAndFeatureChoicesAcrossJsonRoundTrip() {
+        val settings = ProceduralWorldSettings(
+            seed = -782341L,
+            worldSize = 384,
+            relief = 91,
+            mountainRuggedness = 77,
+            plateauAmount = 35,
+            biomeCount = 29,
+            caveDensity = 83,
+            oreRichness = 72,
+            treeDensity = 64,
+            structureDensity = 55,
+            detailPreset = "high",
+            enableCaves = true,
+            enableOres = false,
+            enableTrees = true,
+            enableStructures = false,
+            structureTypes = setOf("village", "stronghold")
+        )
+        val restored = ProceduralWorldSettings.fromJson(settings.toJson().toString())
+        assertEquals(settings.normalized(), restored)
+        assertEquals("blockworld-procedural-v1", restored.toJson().optString("format"))
+    }
+
+    @Test
+    fun proceduralGeneratorProducesDeterministicVariedHeightAndBiomeFields() {
+        val settings = ProceduralWorldSettings(seed = 1234567L, biomeCount = 29)
+        val first = ProceduralWorldGenerator.heightAt(128, 224, settings)
+        val repeated = ProceduralWorldGenerator.heightAt(128, 224, settings)
+        val other = ProceduralWorldGenerator.heightAt(129, 224, settings)
+        assertEquals(first, repeated, 0.0)
+        assertTrue(first in -42.0..196.0)
+        assertTrue(kotlin.math.abs(first - other) > 0.000001)
+        assertEquals(29, ProceduralWorldGenerator.BIOMES.size)
+        assertTrue(ProceduralWorldGenerator.biomeAt(128, 224, first, settings).bedrockId >= 0)
+    }
+
+    @Test
+    fun proceduralCavesCanBeDisabledAndDensityControlsTunnelGeneration() {
+        val disabled = ProceduralWorldSettings(enableCaves = false)
+        assertEquals(false, ProceduralWorldGenerator.caveAt(12, -28, 34, disabled))
+        val enabled = ProceduralWorldSettings(seed = 9081L, caveDensity = 90, enableCaves = true)
+        var caveFound = false
+        loop@ for (x in 0..100 step 4) {
+            for (z in 0..100 step 4) {
+                for (y in -54..-6 step 6) {
+                    if (ProceduralWorldGenerator.caveAt(x, y, z, enabled)) {
+                        caveFound = true
+                        break@loop
+                    }
+                }
+            }
+        }
+        assertTrue("the seeded cave field should carve at least some underground space", caveFound)
+    }
+
+    @Test
+    fun proceduralOreGenerationReturnsStoneWhenDisabledAndDeepslateOresAtDepth() {
+        val biome = ProceduralWorldGenerator.BIOMES.first()
+        val disabled = ProceduralWorldSettings(enableOres = false)
+        assertEquals(WorldBlockId.STONE, ProceduralWorldGenerator.oreAt(18, -35, 52, biome, disabled))
+        val enabled = ProceduralWorldSettings(seed = 4411L, oreRichness = 100)
+        var oreFound = false
+        loop@ for (x in 0..96 step 3) {
+            for (z in 0..96 step 3) {
+                for (y in -56..30 step 4) {
+                    val result = ProceduralWorldGenerator.oreAt(x, y, z, biome, enabled)
+                    if (result != WorldBlockId.STONE) {
+                        oreFound = true
+                        if (y < 0) assertTrue(result in WorldBlockId.DEEPSLATE_COAL_ORE..WorldBlockId.DEEPSLATE_EMERALD_ORE)
+                        break@loop
+                    }
+                }
+            }
+        }
+        assertTrue("seeded mineral field should contain ore", oreFound)
+    }
+
+    @Test
+    fun proceduralTreeAndStructurePlacementAreSeedDeterministic() {
+        val settings = ProceduralWorldSettings(seed = 7171L, treeDensity = 100, structureDensity = 100)
+        val candidateCell = (0..30).first { cell ->
+            ProceduralWorldGenerator.treeCandidate(cell, 19, settings) != null
+        }
+        assertEquals(
+            ProceduralWorldGenerator.treeCandidate(candidateCell, 19, settings),
+            ProceduralWorldGenerator.treeCandidate(candidateCell, 19, settings)
+        )
+        assertNotNull(ProceduralWorldGenerator.treeCandidate(candidateCell, 19, settings))
+        assertEquals(
+            ProceduralWorldGenerator.structureAnchor(2, 3, settings),
+            ProceduralWorldGenerator.structureAnchor(2, 3, settings)
+        )
+        assertNotNull(ProceduralWorldGenerator.structureAnchor(2, 3, settings))
+    }
+
+    @Test
+    fun proceduralWorldFileEstimateRespondsToSizeAndDetailPreset() {
+        val compact = ProceduralWorldSettings(worldSize = 256, detailPreset = "compact").estimatedArchiveBytes()
+        val standard = ProceduralWorldSettings(worldSize = 256, detailPreset = "standard").estimatedArchiveBytes()
+        val large = ProceduralWorldSettings(worldSize = 512, detailPreset = "standard").estimatedArchiveBytes()
+        assertTrue(compact < standard)
+        assertTrue(large > standard)
+    }
+
+    @Test
+    fun data3dWritesHeightmapWithBedrockMinus64OffsetAndTwentyFourBiomeSections() {
+        val heights = IntArray(256) { -64 }
+        heights[1] = 0
+        val bytes = BedrockWorldExporter.encodeData3D(heights, IntArray(256) { 1 })
+        assertEquals(632, bytes.size)
+        assertEquals(0, readUnsignedShortLE(bytes, 0))
+        assertEquals(64, readUnsignedShortLE(bytes, 2))
+        repeat(24) { section ->
+            assertEquals(1, bytes[512 + section * 5].toInt() and 0xFF)
+        }
+    }
+
+    @Test
+    fun data3dBiomePalettePacksBiomeColumnsInBedrockXzyOrder() {
+        val heights = IntArray(256) { 0 }
+        val biomes = IntArray(256) { 1 }
+        biomes[1] = 4 // x=1,z=0 must be stored at biome index 256, with Y changing fastest.
+        val bytes = BedrockWorldExporter.encodeData3D(heights, biomes)
+        val base = 512
+        assertEquals(3, bytes[base].toInt() and 0xFF) // 1 bit per palette index, persistent palette.
+        val packedWordsStart = base + 1
+        val wordForIndex0 = readIntLE(bytes, packedWordsStart)
+        val wordForIndex256 = readIntLE(bytes, packedWordsStart + (256 / 32) * 4)
+        val paletteIndex0 = wordForIndex0 and 1
+        val paletteIndex256 = wordForIndex256 and 1
+        val paletteCountOffset = packedWordsStart + 128 * 4
+        assertEquals(2, readIntLE(bytes, paletteCountOffset))
+        val paletteStart = paletteCountOffset + 4
+        val palette = listOf(
+            readIntLE(bytes, paletteStart),
+            readIntLE(bytes, paletteStart + 4)
+        )
+        assertEquals(1, palette[paletteIndex0])
+        assertEquals(4, palette[paletteIndex256])
+    }
+
+    @Test
     fun osmBuildingHeightConvertsMetersToWorldBlocks() {
         assertEquals(12, BedrockWorldExporter.buildingHeightBlocks(24.0, 2.0))
         assertEquals(2, BedrockWorldExporter.buildingHeightBlocks(1.0, 4.0))
@@ -246,8 +389,28 @@ class BedrockWorldFormatTest {
     fun buildingPaletteUsesBrickWallsAndStoneBrickRoofs() {
         val wall = BedrockWorldExporter.encodePaletteEntry(7).toString(Charsets.ISO_8859_1)
         val roof = BedrockWorldExporter.encodePaletteEntry(8).toString(Charsets.ISO_8859_1)
-        assertTrue(wall.contains("minecraft:bricks"))
+        assertTrue(wall.contains("minecraft:brick_block"))
         assertTrue(roof.contains("minecraft:stone_bricks"))
+    }
+
+    @Test
+    fun modernTreePaletteUsesBedrockLogAndLeafStates() {
+        val log = BedrockWorldExporter.encodePaletteEntry(WorldBlockId.OAK_LOG).toString(Charsets.ISO_8859_1)
+        val leaves = BedrockWorldExporter.encodePaletteEntry(WorldBlockId.CHERRY_LEAVES).toString(Charsets.ISO_8859_1)
+        assertTrue(log.contains("minecraft:oak_log"))
+        assertTrue(log.contains("pillar_axis"))
+        assertTrue(leaves.contains("minecraft:cherry_leaves"))
+        assertTrue(leaves.contains("persistent_bit"))
+        assertTrue(leaves.contains("update_bit"))
+        assertEquals(false, leaves.contains("old_leaf_type"))
+    }
+
+    @Test
+    fun deepOrePaletteUsesBedrockVanillaIdentifiers() {
+        val deepIron = BedrockWorldExporter.encodePaletteEntry(WorldBlockId.DEEPSLATE_IRON_ORE).toString(Charsets.ISO_8859_1)
+        val deepDiamond = BedrockWorldExporter.encodePaletteEntry(WorldBlockId.DEEPSLATE_DIAMOND_ORE).toString(Charsets.ISO_8859_1)
+        assertTrue(deepIron.contains("minecraft:deepslate_iron_ore"))
+        assertTrue(deepDiamond.contains("minecraft:deepslate_diamond_ore"))
     }
 
     @Test
@@ -348,6 +511,9 @@ class BedrockWorldFormatTest {
         }
         return -1
     }
+
+    private fun readUnsignedShortLE(bytes: ByteArray, offset: Int): Int =
+        (bytes[offset].toInt() and 0xFF) or ((bytes[offset + 1].toInt() and 0xFF) shl 8)
 
     private fun readIntLE(bytes: ByteArray, offset: Int): Int {
         return (bytes[offset].toInt() and 0xFF) or

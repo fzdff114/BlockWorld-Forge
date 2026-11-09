@@ -89,10 +89,8 @@ private const val BASE_STYLE_URI = "https://tiles.openfreemap.org/styles/liberty
 private data class NavPage(val id: String, val title: String, val icon: ImageVector)
 
 private val navPages = listOf(
+    NavPage("terrain", "生成器", Icons.Outlined.AutoAwesome),
     NavPage("projects", "项目", Icons.Outlined.FolderOpen),
-    NavPage("map", "地图", Icons.Outlined.Map),
-    NavPage("terrain", "地形", Icons.Outlined.Terrain),
-    NavPage("assets", "素材", Icons.Outlined.Layers),
     NavPage("export", "导出", Icons.Outlined.FileUpload)
 )
 
@@ -145,93 +143,13 @@ private data class WorldProject(
 )
 
 class MainActivity : ComponentActivity() {
-    private lateinit var atlasMapView: MapView
-    private val atlasMapState = mutableStateOf<MapLibreMap?>(null)
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        MapLibre.getInstance(applicationContext)
-        atlasMapView = MapView(this)
-        atlasMapView.onCreate(savedInstanceState)
-        atlasMapView.getMapAsync { map ->
-            map.cameraPosition = CameraPosition.Builder()
-                .target(LatLng(35.8617, 104.1954))
-                .zoom(4.2)
-                .build()
-
-            map.setStyle(Style.Builder().fromUri(BASE_STYLE_URI)) { style ->
-                style.addSource(GeoJsonSource(AREA_FILL_SOURCE, EMPTY_FEATURES))
-                style.addSource(GeoJsonSource(AREA_LINE_SOURCE, EMPTY_FEATURES))
-                style.addSource(GeoJsonSource(AREA_POINTS_SOURCE, EMPTY_FEATURES))
-
-                style.addLayer(
-                    FillLayer("atlas-area-fill-layer", AREA_FILL_SOURCE).withProperties(
-                        fillColor(AndroidColor.rgb(53, 106, 230)),
-                        fillOpacity(0.18f)
-                    )
-                )
-                style.addLayer(
-                    LineLayer("atlas-area-line-layer", AREA_LINE_SOURCE).withProperties(
-                        lineColor(AndroidColor.rgb(35, 92, 220)),
-                        lineWidth(3.0f)
-                    )
-                )
-                style.addLayer(
-                    CircleLayer("atlas-area-points-layer", AREA_POINTS_SOURCE).withProperties(
-                        circleRadius(5.5f),
-                        circleColor(AndroidColor.rgb(35, 92, 220)),
-                        circleStrokeColor(AndroidColor.WHITE),
-                        circleStrokeWidth(2.0f)
-                    )
-                )
-                atlasMapState.value = map
-            }
-        }
-
         setContent {
             AtlasTheme {
-                AtlasApp(
-                    mapView = atlasMapView,
-                    map = atlasMapState.value
-                )
+                AtlasApp()
             }
         }
-    }
-
-    override fun onStart() {
-        super.onStart()
-        if (::atlasMapView.isInitialized) atlasMapView.onStart()
-    }
-
-    override fun onResume() {
-        super.onResume()
-        if (::atlasMapView.isInitialized) atlasMapView.onResume()
-    }
-
-    override fun onPause() {
-        if (::atlasMapView.isInitialized) atlasMapView.onPause()
-        super.onPause()
-    }
-
-    override fun onStop() {
-        if (::atlasMapView.isInitialized) atlasMapView.onStop()
-        super.onStop()
-    }
-
-    override fun onLowMemory() {
-        super.onLowMemory()
-        if (::atlasMapView.isInitialized) atlasMapView.onLowMemory()
-    }
-
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-        if (::atlasMapView.isInitialized) atlasMapView.onSaveInstanceState(outState)
-    }
-
-    override fun onDestroy() {
-        if (::atlasMapView.isInitialized) atlasMapView.onDestroy()
-        super.onDestroy()
     }
 }
 
@@ -253,82 +171,25 @@ private fun AtlasTheme(content: @Composable () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AtlasApp(mapView: MapView, map: MapLibreMap?) {
+private fun AtlasApp() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var currentPage by rememberSaveable { mutableStateOf("projects") }
-    var showNewProject by rememberSaveable { mutableStateOf(false) }
+    var currentPage by rememberSaveable { mutableStateOf("terrain") }
+    var generatorProjectName by rememberSaveable { mutableStateOf("壮丽世界") }
+    var settingsJson by rememberSaveable {
+        mutableStateOf(ProceduralWorldSettings().toJson().toString())
+    }
+    val settings = remember(settingsJson) { ProceduralWorldSettings.fromJson(settingsJson) }
     val projects = remember(context) {
         mutableStateListOf<WorldProject>().apply { addAll(loadProjects(context)) }
     }
-
-    val selectedPoints = remember { mutableStateListOf<GeoCoordinate>() }
-    val importedChinaBuildings = remember { mutableStateListOf<OsmBuilding>() }
-    var buildingImportStatus by remember { mutableStateOf("先在地图页圈选区域，再导入该省/市的建筑 Shapefile ZIP") }
-    var buildingImportBusy by remember { mutableStateOf(false) }
-    var selectedBuildingDataset by rememberSaveable { mutableStateOf("3D-GloBFP") }
-    var elevationGrid by remember { mutableStateOf<ElevationGrid?>(null) }
-    var pendingRegion by remember { mutableStateOf<RegionDraft?>(null) }
     var pendingExportProject by remember { mutableStateOf<WorldProject?>(null) }
     var exportBusy by remember { mutableStateOf(false) }
     var exportProgress by remember { mutableFloatStateOf(0f) }
     var exportStatus by remember { mutableStateOf("") }
 
-    val buildingDatasetLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) {
-            val points = selectedPoints.toList()
-            if (points.size < 3) {
-                buildingImportStatus = "请先到地图页圈选目标区域，再返回素材页导入建筑包"
-            } else {
-                buildingImportBusy = true
-                buildingImportStatus = "正在读取中国建筑数据…"
-                val west = points.minOf { it.longitude }
-                val east = points.maxOf { it.longitude }
-                val south = points.minOf { it.latitude }
-                val north = points.maxOf { it.latitude }
-                scope.launch {
-                    try {
-                        val result = withContext(Dispatchers.IO) {
-                            ChinaBuildingDatasetImporter.importZip(
-                                context, uri, west, east, south, north,
-                                sourceLabel = selectedBuildingDataset
-                            ) { phase ->
-                                scope.launch { buildingImportStatus = phase }
-                            }
-                        }
-                        importedChinaBuildings.clear()
-                        importedChinaBuildings.addAll(
-                            result.buildings.map { feature ->
-                                OsmBuilding(
-                                    polygon = feature.coordinates.map { (longitude, latitude) ->
-                                        GeoCoordinate(latitude, longitude)
-                                    },
-                                    heightMeters = feature.heightMeters,
-                                    minHeightMeters = 0.0,
-                                    name = feature.name,
-                                    source = feature.source
-                                )
-                            }
-                        )
-                        elevationGrid = elevationGrid?.let { current ->
-                            val merged = mergeBuildingSources(importedChinaBuildings, current.buildings)
-                            current.copy(
-                                buildings = merged,
-                                buildingError = if (merged.isEmpty()) current.buildingError else null
-                            )
-                        }
-                        buildingImportStatus = "导入完成：${result.buildings.size} 栋带高度建筑，读取 ${result.sourceFiles} 个图层；无高度记录 ${result.missingHeight} 条" +
-                            if (result.truncated) "（已到 20,000 栋上限，请缩小选区分批导入）" else ""
-                    } catch (error: Exception) {
-                        buildingImportStatus = "导入失败：" + (error.localizedMessage ?: "请检查 ZIP / 坐标系 / height 字段")
-                    } finally {
-                        buildingImportBusy = false
-                    }
-                }
-            }
-        }
+    fun updateSettings(value: ProceduralWorldSettings) {
+        settingsJson = value.normalized().toJson().toString()
     }
 
     val exportLauncher = rememberLauncherForActivityResult(
@@ -339,7 +200,7 @@ private fun AtlasApp(mapView: MapView, map: MapLibreMap?) {
         if (uri != null && project != null && !project.regionDataJson.isNullOrBlank()) {
             exportBusy = true
             exportProgress = 0f
-            exportStatus = ""
+            exportStatus = "准备生成区块…"
             scope.launch {
                 try {
                     val report = withContext(Dispatchers.IO) {
@@ -353,16 +214,15 @@ private fun AtlasApp(mapView: MapView, map: MapLibreMap?) {
                         ) { completed, total ->
                             scope.launch {
                                 exportProgress = completed.toFloat() / total.coerceAtLeast(1)
-                                exportStatus = "分批写入区块：" + completed + " / " + total
+                                exportStatus = "生成并写入区块：" + completed + " / " + total
                             }
                         }
                     }
                     exportProgress = 1f
-                    exportStatus = "已导出：" + report.widthBlocks + " × " + report.depthBlocks +
-                        " 格 · " + report.chunkCount + " 个区块 · " + report.buildingCount + " 栋建筑" +
-                        " · 垂直比例约 1:" + String.format(Locale.US, "%.2f", report.verticalMetersPerBlock) + " m/块"
+                    exportStatus = "完成：" + report.widthBlocks + " × " + report.depthBlocks +
+                        " 方块 · " + report.chunkCount + " 个区块 · " + formatBytes(report.archiveBytes)
                 } catch (error: Exception) {
-                    exportStatus = "导出失败：" + (error.localizedMessage ?: "未知错误")
+                    exportStatus = "生成失败：" + (error.localizedMessage ?: "未知错误")
                 } finally {
                     exportBusy = false
                 }
@@ -370,24 +230,24 @@ private fun AtlasApp(mapView: MapView, map: MapLibreMap?) {
         }
     }
 
-    var worldSize by rememberSaveable { mutableIntStateOf(10000) }
-    var terrainStyle by rememberSaveable { mutableStateOf("自然") }
-    var useElevation by rememberSaveable { mutableStateOf(true) }
-    var useWater by rememberSaveable { mutableStateOf(true) }
-    var useStructures by rememberSaveable { mutableStateOf(false) }
+    fun launchExport(project: WorldProject) {
+        pendingExportProject = project
+        val safeName = project.name.filter {
+            it.isLetterOrDigit() || it == '-' || it == '_' || it == ' '
+        }.trim().ifBlank { "BlockWorld" }
+        exportLauncher.launch(safeName + ".mcworld")
+        currentPage = "export"
+    }
 
     Scaffold(
         containerColor = PageBackground,
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        "Atlas",
-                        fontSize = 21.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Ink,
-                        letterSpacing = (-0.5).sp
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                        Text("BLOCKWORLD FORGE", fontSize = 15.sp, fontWeight = FontWeight.ExtraBold, color = Ink, letterSpacing = 1.sp)
+                        Text("程序化世界 · 地形 · 群系 · 结构", fontSize = 10.sp, color = Muted)
+                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.White)
             )
@@ -412,133 +272,42 @@ private fun AtlasApp(mapView: MapView, map: MapLibreMap?) {
             }
         }
     ) { innerPadding ->
-        Box(
-            Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .background(PageBackground)
-        ) {
+        Box(Modifier.fillMaxSize().padding(innerPadding).background(PageBackground)) {
             when (currentPage) {
+                "terrain" -> TerrainScreen(
+                    projectName = generatorProjectName,
+                    onProjectName = { generatorProjectName = it },
+                    settings = settings,
+                    onSettings = ::updateSettings,
+                    onCreateProject = {
+                        val snapshot = settings.normalized()
+                        val project = WorldProject(
+                            name = generatorProjectName.trim().ifBlank { "壮丽世界" },
+                            size = snapshot.worldSize,
+                            regionSummary = "程序生成 · " + snapshot.worldSize + " × " + snapshot.worldSize + " 方块",
+                            elevationSummary = snapshot.biomeCount.toString() + " 种群系 · 洞穴/矿脉/树木/遗迹",
+                            regionDataJson = snapshot.toJson().toString(),
+                            metersPerBlock = 1,
+                            verticalExaggeration = 1.0
+                        )
+                        projects.add(0, project)
+                        saveProjects(context, projects)
+                        currentPage = "projects"
+                    }
+                )
                 "projects" -> ProjectsScreen(
                     projects = projects,
-                    onCreate = {
-                        pendingRegion = null
-                        showNewProject = true
-                    }
-                )
-                "map" -> MapScreen(
-                    mapView = mapView,
-                    map = map,
-                    selectedPoints = selectedPoints,
-                    elevationGrid = elevationGrid,
-                    onAddPoint = { point ->
-                        if (selectedPoints.size < 50) {
-                            selectedPoints.add(point)
-                            elevationGrid = null
-                        }
-                    },
-                    onSetPoints = { points ->
-                        selectedPoints.clear()
-                        selectedPoints.addAll(points)
-                        elevationGrid = null
-                    },
-                    onUndo = {
-                        if (selectedPoints.isNotEmpty()) selectedPoints.removeAt(selectedPoints.lastIndex)
-                        elevationGrid = null
-                    },
-                    onClear = {
-                        selectedPoints.clear()
-                        elevationGrid = null
-                    },
-                    importedBuildings = importedChinaBuildings,
-                    onElevationReady = { elevationGrid = it },
-                    onSaveRegion = {
-                        if (selectedPoints.size >= 3) {
-                            val bounds = regionDimensions(selectedPoints)
-                            pendingRegion = RegionDraft(
-                                selectedPoints.toList(),
-                                bounds.first,
-                                bounds.second,
-                                elevationGrid
-                            )
-                            showNewProject = true
-                        }
-                    }
-                )
-                "terrain" -> TerrainScreen(
-                    worldSize = worldSize,
-                    onWorldSize = { worldSize = it },
-                    terrainStyle = terrainStyle,
-                    onTerrainStyle = { terrainStyle = it },
-                    useElevation = useElevation,
-                    onUseElevation = { useElevation = it },
-                    useWater = useWater,
-                    onUseWater = { useWater = it },
-                    useStructures = useStructures,
-                    onUseStructures = { useStructures = it }
-                )
-                "assets" -> AssetsScreen(
-                    importedCount = importedChinaBuildings.size,
-                    importStatus = buildingImportStatus,
-                    selectedDataset = selectedBuildingDataset,
-                    onSelectedDataset = { selectedBuildingDataset = it },
-                    importing = buildingImportBusy,
-                    onImportChinaBuildings = {
-                        buildingDatasetLauncher.launch(
-                            arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream", "*/*")
-                        )
-                    },
-                    onClearImported = {
-                        importedChinaBuildings.clear()
-                        elevationGrid = elevationGrid?.let { current ->
-                            current.copy(buildings = current.buildings.filterNot { it.source.contains("3D-GloBFP") })
-                        }
-                        buildingImportStatus = "已清除本次导入的中国建筑数据"
-                    }
+                    onCreate = { currentPage = "terrain" }
                 )
                 "export" -> ExportScreen(
                     projects = projects,
                     exporting = exportBusy,
                     progress = exportProgress,
                     status = exportStatus,
-                    onExport = { project ->
-                        pendingExportProject = project
-                        val safeName = project.name.filter {
-                            it.isLetterOrDigit() || it == '-' || it == '_' || it == ' '
-                        }.trim().ifBlank { "Atlas" }
-                        exportLauncher.launch(safeName + ".mcworld")
-                    }
+                    onExport = { launchExport(it) }
                 )
             }
         }
-    }
-
-    if (showNewProject) {
-        NewProjectDialog(
-            regionSummary = pendingRegion?.summary,
-            hasElevation = pendingRegion?.elevation != null,
-            onDismiss = { showNewProject = false },
-            onCreate = { name, size, metersPerBlock, verticalExaggeration ->
-                val region = pendingRegion
-                projects.add(
-                    0,
-                    WorldProject(
-                        name = name.ifBlank { "未命名项目" },
-                        size = size,
-                        regionSummary = region?.summary,
-                        elevationSummary = region?.elevation?.summary,
-                        regionDataJson = region?.let { regionDraftJson(it) },
-                        metersPerBlock = metersPerBlock,
-                        verticalExaggeration = verticalExaggeration
-                    )
-                )
-                saveProjects(context, projects)
-                worldSize = size
-                pendingRegion = null
-                showNewProject = false
-                currentPage = "projects"
-            }
-        )
     }
 }
 
@@ -1612,6 +1381,13 @@ private fun fetchElevationGrid(
 private const val PROJECT_PREFS = "atlas_local_projects"
 private const val PROJECTS_KEY = "projects_json"
 
+private fun formatBytes(bytes: Long): String = when {
+    bytes >= 1024L * 1024L * 1024L -> String.format(Locale.US, "%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0))
+    bytes >= 1024L * 1024L -> String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024.0))
+    bytes >= 1024L -> String.format(Locale.US, "%.0f KB", bytes / 1024.0)
+    else -> bytes.toString() + " B"
+}
+
 private fun loadProjects(context: android.content.Context): List<WorldProject> {
     return try {
         val raw = context.getSharedPreferences(PROJECT_PREFS, android.content.Context.MODE_PRIVATE)
@@ -1733,73 +1509,235 @@ private fun regionDraftJson(region: RegionDraft): String {
 
 @Composable
 private fun TerrainScreen(
-    worldSize: Int,
-    onWorldSize: (Int) -> Unit,
-    terrainStyle: String,
-    onTerrainStyle: (String) -> Unit,
-    useElevation: Boolean,
-    onUseElevation: (Boolean) -> Unit,
-    useWater: Boolean,
-    onUseWater: (Boolean) -> Unit,
-    useStructures: Boolean,
-    onUseStructures: (Boolean) -> Unit
+    projectName: String,
+    onProjectName: (String) -> Unit,
+    settings: ProceduralWorldSettings,
+    onSettings: (ProceduralWorldSettings) -> Unit,
+    onCreateProject: () -> Unit
 ) {
+    val preview = remember(settings) { ProceduralWorldGenerator.previewHeights(settings, 52) }
+    val estimate = settings.estimatedArchiveBytes()
     Column(
-        Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 18.dp, vertical = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(18.dp)
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(15.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text("地形", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Ink)
-
-        Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-            SectionLabel("地图尺寸")
-            Text(
-                "${worldSize / 1000}K × ${worldSize / 1000}K",
-                fontSize = 13.sp,
-                color = Ink,
-                fontWeight = FontWeight.SemiBold
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = Color(0xFF142842),
+            shape = RoundedCornerShape(17.dp)
+        ) {
+            Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("PROCEDURAL WORLD ENGINE", color = Color(0xFFB8CCF3), fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.3.sp)
+                Text("壮丽结构生成器", color = Color.White, fontSize = 23.sp, fontWeight = FontWeight.ExtraBold)
+                Text("完全自行构建地形，不再依赖地图、外部高程或建筑采集。", color = Color(0xFFD5DFEF), fontSize = 11.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    SmallStatusPill("29 种群系", Color(0xFF2A4A72))
+                    SmallStatusPill("洞穴与矿脉", Color(0xFF2A4A72))
+                    SmallStatusPill("多种树形", Color(0xFF2A4A72))
+                }
+            }
+        }
+        SettingsCard("世界地形预览", "根据当前种子实时重绘高度分布") {
+            ProceduralTerrainPreview(preview)
+            Text("种子：" + settings.seed + " · 起伏：" + settings.relief + " · 山脉崎岖：" + settings.mountainRuggedness, fontSize = 10.sp, color = Muted)
+        }
+        SettingsCard("世界基本参数", "边长与细节档会影响生成时间和压缩包体积") {
+            OutlinedTextField(
+                value = projectName,
+                onValueChange = onProjectName,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("世界名称") },
+                singleLine = true
             )
-            Row(
-                Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                mapSizes.forEach { size ->
+            var seedText by remember(settings.seed) { mutableStateOf(settings.seed.toString()) }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                OutlinedTextField(
+                    value = seedText,
+                    onValueChange = { raw ->
+                        val cleaned = raw.filter { it.isDigit() || it == '-' }.take(20)
+                        seedText = cleaned
+                        cleaned.toLongOrNull()?.let { onSettings(settings.copy(seed = it)) }
+                    },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("世界种子 Seed") },
+                    singleLine = true,
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number)
+                )
+                OutlinedButton(onClick = {
+                    val seed = System.currentTimeMillis() xor (System.nanoTime() shl 1)
+                    seedText = seed.toString()
+                    onSettings(settings.copy(seed = seed))
+                }) { Text("随机种子") }
+            }
+            Text("世界边长：" + settings.worldSize + " 方块", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Ink)
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                listOf(128, 192, 256, 320, 384, 512).forEach { size ->
                     FilterChip(
-                        selected = worldSize == size,
-                        onClick = { onWorldSize(size) },
-                        label = { Text("${size / 1000}K", fontSize = 11.sp) }
+                        selected = settings.worldSize == size,
+                        onClick = { onSettings(settings.copy(worldSize = size)) },
+                        label = { Text(size.toString() + "²", fontSize = 10.sp) }
                     )
                 }
             }
-        }
-
-        HorizontalDivider(color = DividerColor)
-
-        Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-            SectionLabel("地形风格")
-            Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                listOf("真实", "自然", "群岛").forEach { style ->
+            Text("细节档位 / 文件大小", fontSize = 12.sp, color = Ink, fontWeight = FontWeight.SemiBold)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                listOf("compact" to "低体积", "standard" to "标准", "high" to "高细节").forEach { item ->
                     FilterChip(
-                        selected = terrainStyle == style,
-                        onClick = { onTerrainStyle(style) },
-                        label = { Text(style, fontSize = 11.sp) }
+                        selected = settings.detailPreset == item.first,
+                        onClick = { onSettings(settings.copy(detailPreset = item.first)) },
+                        label = { Text(item.second, fontSize = 10.sp) }
                     )
                 }
             }
+            Text("预计 .mcworld：" + formatBytes(estimate) + "（估算值）", fontSize = 11.sp, color = Accent, fontWeight = FontWeight.Bold)
+            Text("实际文件大小会随地形、洞穴、植被和结构数量变化。", fontSize = 9.sp, color = Muted)
         }
-
-        HorizontalDivider(color = DividerColor)
-
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            SectionLabel("生成选项")
-            SwitchRow("高程数据", useElevation, onUseElevation)
-            SwitchRow("河流与湖泊", useWater, onUseWater)
-            SwitchRow("结构与遗迹", useStructures, onUseStructures)
+        SettingsCard("山脉与高原", "调整地形的壮阔程度和轮廓") {
+            IntSetting("高度起伏", settings.relief, "平缓", "巨型山脉") { onSettings(settings.copy(relief = it)) }
+            IntSetting("山脉崎岖度", settings.mountainRuggedness, "圆润山丘", "尖峭山脊") { onSettings(settings.copy(mountainRuggedness = it)) }
+            IntSetting("高原比例", settings.plateauAmount, "连续山脉", "桌状高原") { onSettings(settings.copy(plateauAmount = it)) }
+            IntSetting("海平面", settings.waterLevel, "低水位", "高水位", 16, 64) { onSettings(settings.copy(waterLevel = it)) }
+            SwitchRow("海洋与湖泊", settings.enableWater) { onSettings(settings.copy(enableWater = it)) }
+        }
+        SettingsCard("群系与森林", "至少 20 种，最多启用完整群系列表") {
+            Text("启用群系数量：" + settings.biomeCount + " / " + ProceduralWorldGenerator.BIOMES.size, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Ink)
+            Slider(
+                value = settings.biomeCount.toFloat(),
+                onValueChange = { onSettings(settings.copy(biomeCount = it.roundToInt())) },
+                valueRange = 20f..ProceduralWorldGenerator.BIOMES.size.toFloat(),
+                steps = (ProceduralWorldGenerator.BIOMES.size - 21).coerceAtLeast(0)
+            )
+            IntSetting("树木密度", settings.treeDensity, "稀疏林地", "茂密森林") { onSettings(settings.copy(treeDensity = it)) }
+            SwitchRow("生成树木与不同树冠", settings.enableTrees) { onSettings(settings.copy(enableTrees = it)) }
+            Text("橡树、白桦、云杉、巨型云杉、丛林树、金合欢、深色橡木、红树、樱花树等造型按群系分布。", fontSize = 10.sp, color = Muted)
+        }
+        SettingsCard("地下洞穴与矿脉", "生成地下通道、洞室和分层矿石") {
+            IntSetting("洞穴密度", settings.caveDensity, "少量洞穴", "密集洞系") { onSettings(settings.copy(caveDensity = it)) }
+            IntSetting("矿脉丰富度", settings.oreRichness, "稀有矿物", "富矿区域") { onSettings(settings.copy(oreRichness = it)) }
+            SwitchRow("生成洞穴", settings.enableCaves) { onSettings(settings.copy(enableCaves = it)) }
+            SwitchRow("生成矿石", settings.enableOres) { onSettings(settings.copy(enableOres = it)) }
+            Text("包括煤、铁、铜、金、红石、青金石、钻石和绿宝石。", fontSize = 10.sp, color = Muted)
+        }
+        SettingsCard("遗迹与大型结构", "原创结构设计，采用基岩版原版方块风格") {
+            IntSetting("结构出现频率", settings.structureDensity, "稀少遗迹", "遗迹密集") { onSettings(settings.copy(structureDensity = it)) }
+            SwitchRow("生成遗迹与结构", settings.enableStructures) { onSettings(settings.copy(enableStructures = it)) }
+            val options = listOf(
+                "village" to "村庄群落",
+                "desert_temple" to "沙漠神殿",
+                "jungle_temple" to "丛林神庙",
+                "ruined_portal" to "破损传送门",
+                "mineshaft" to "地下矿道",
+                "stronghold" to "地下要塞",
+                "ocean_ruin" to "海底遗迹",
+                "watchtower" to "山地瞭望塔"
+            )
+            options.chunked(2).forEach { row ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    row.forEach { item ->
+                        FilterChip(
+                            modifier = Modifier.weight(1f),
+                            selected = settings.structureTypes.contains(item.first),
+                            onClick = {
+                                val next = settings.structureTypes.toMutableSet()
+                                if (!next.add(item.first)) next.remove(item.first)
+                                onSettings(settings.copy(structureTypes = next))
+                            },
+                            label = { Text(item.second, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        )
+                    }
+                }
+            }
+        }
+        Surface(modifier = Modifier.fillMaxWidth(), color = AccentSoft, shape = RoundedCornerShape(14.dp)) {
+            Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                Text("生成方案", fontSize = 14.sp, color = Accent, fontWeight = FontWeight.Bold)
+                Text("配置完成后保存生成方案，再进入“导出”写入 LevelDB。世界由本地程序直接构建，不需要地图服务。", fontSize = 10.sp, color = Ink)
+                Button(onClick = onCreateProject, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp)) {
+                    Icon(Icons.Outlined.AutoAwesome, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("保存世界生成方案")
+                }
+            }
         }
     }
 }
+
+@Composable
+private fun ProceduralTerrainPreview(heights: DoubleArray) {
+    Canvas(
+        Modifier.fillMaxWidth().height(150.dp)
+            .clip(RoundedCornerShape(9.dp))
+            .background(Color(0xFF1C3148))
+    ) {
+        val side = kotlin.math.sqrt(heights.size.toDouble()).toInt().coerceAtLeast(1)
+        val cellWidth = size.width / side
+        val cellHeight = size.height / side
+        heights.forEachIndexed { index, height ->
+            val level = ((height + 42.0) / 238.0).toFloat().coerceIn(0f, 1f)
+            val color = when {
+                level < 0.18f -> Color(0xFF183B59)
+                level < 0.32f -> Color(0xFF397A83)
+                level < 0.48f -> Color(0xFF6E976B)
+                level < 0.66f -> Color(0xFF9E9C68)
+                level < 0.82f -> Color(0xFF8B806C)
+                level < 0.94f -> Color(0xFFB4B6B0)
+                else -> Color(0xFFE4E8EC)
+            }
+            val x = index % side
+            val y = index / side
+            drawRect(color, Offset(x * cellWidth, y * cellHeight), Size(cellWidth + 0.5f, cellHeight + 0.5f))
+        }
+    }
+}
+
+@Composable
+private fun SmallStatusPill(label: String, color: Color) {
+    Surface(color = color, shape = RoundedCornerShape(20.dp)) {
+        Text(label, Modifier.padding(horizontal = 9.dp, vertical = 5.dp), color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun SettingsCard(title: String, description: String, content: @Composable ColumnScope.() -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = Color.White,
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, DividerColor)
+    ) {
+        Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(title, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Ink)
+            Text(description, fontSize = 10.sp, color = Muted)
+            HorizontalDivider(color = DividerColor)
+            content()
+        }
+    }
+}
+
+@Composable
+private fun IntSetting(
+    title: String,
+    value: Int,
+    lowLabel: String,
+    highLabel: String,
+    minimum: Int = 0,
+    maximum: Int = 100,
+    onValue: (Int) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(title, modifier = Modifier.weight(1f), fontSize = 11.sp, color = Ink, fontWeight = FontWeight.Medium)
+            Text(value.toString(), fontSize = 11.sp, color = Accent, fontWeight = FontWeight.Bold)
+        }
+        Slider(value = value.toFloat(), onValueChange = { onValue(it.roundToInt().coerceIn(minimum, maximum)) }, valueRange = minimum.toFloat()..maximum.toFloat())
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(lowLabel, fontSize = 9.sp, color = Muted)
+            Text(highLabel, fontSize = 9.sp, color = Muted)
+        }
+    }
+}
+
+
 
 @Composable
 private fun SectionLabel(text: String) {
@@ -1959,9 +1897,7 @@ private fun ExportScreen(
     status: String,
     onExport: (WorldProject) -> Unit
 ) {
-    val available = projects.filter {
-        !it.regionDataJson.isNullOrBlank() && it.regionDataJson!!.contains("elevationMeters")
-    }
+    val available = projects.filter { !it.regionDataJson.isNullOrBlank() }
     Column(
         Modifier
             .fillMaxSize()
@@ -1971,7 +1907,7 @@ private fun ExportScreen(
     ) {
         Text("导出", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Ink)
         if (available.isEmpty()) {
-            Text("先圈选现实区域并采集高程", fontSize = 12.sp, color = Muted)
+            Text("先在生成器配置世界，再保存生成方案。", fontSize = 12.sp, color = Muted)
         } else {
             available.forEach { project ->
                 Surface(
