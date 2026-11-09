@@ -947,6 +947,15 @@ internal fun decodeTerrariumElevation(red: Int, green: Int, blue: Int): Double {
     return (red * 256.0 + green + blue / 256.0) - 32768.0
 }
 
+internal fun terrariumTilePixelIndex(pixel256: Int, tileDimension: Int): Int {
+    val hasBuffer = tileDimension == 260 || tileDimension == 516
+    val buffer = if (hasBuffer) 2 else 0
+    val usefulPixels = tileDimension - buffer * 2
+    return (buffer + (pixel256.coerceIn(0, 255) / 256.0 * usefulPixels))
+        .toInt()
+        .coerceIn(0, tileDimension - 1)
+}
+
 private fun chooseTerrariumZoom(west: Double, east: Double, south: Double, north: Double): Int {
     for (zoom in 15 downTo 8) {
         val corners = listOf(
@@ -1114,28 +1123,35 @@ private fun fetchElevationGrid(boundary: List<GeoCoordinate>): ElevationGrid {
     val tileKeys = pixels.map { it.tileX to it.tileY }.distinct()
     if (tileKeys.size > 64) throw IOException("当前区域需要下载过多 DEM 瓦片，请缩小圈选范围")
     val executor = Executors.newFixedThreadPool(4)
-    val bitmaps = HashMap<Pair<Int, Int>, Bitmap>()
     try {
-        val futures = tileKeys.map { key ->
-            key to executor.submit(Callable { downloadTerrariumTile(key.first, key.second, zoom) })
-        }
-        for ((key, future) in futures) {
-            bitmaps[key] = future.get()
-        }
+        val samplesByTile = pixels.groupBy { it.tileX to it.tileY }
         val allValues = ArrayList<Double>(pixels.size)
-        for (sample in pixels) {
-            val bitmap = bitmaps[sample.tileX to sample.tileY]
-                ?: throw IOException("缺少 DEM 瓦片")
-            val pixel = bitmap.getPixel(sample.pixelX.coerceIn(0, bitmap.width - 1), sample.pixelY.coerceIn(0, bitmap.height - 1))
-            if (AndroidColor.alpha(pixel) == 0) continue
-            val value = decodeTerrariumElevation(
-                AndroidColor.red(pixel),
-                AndroidColor.green(pixel),
-                AndroidColor.blue(pixel)
-            )
-            if (value.isFinite()) {
-                matrix[sample.row][sample.column] = value
-                allValues.add(value)
+        // Keep at most four decoded PNG tiles alive at once on mobile devices.
+        for (tileBatch in tileKeys.chunked(4)) {
+            val futures = tileBatch.map { key ->
+                key to executor.submit(Callable { downloadTerrariumTile(key.first, key.second, zoom) })
+            }
+            for ((key, future) in futures) {
+                val bitmap = future.get()
+                try {
+                    for (sample in samplesByTile[key].orEmpty()) {
+                        val pixelX = terrariumTilePixelIndex(sample.pixelX, bitmap.width)
+                        val pixelY = terrariumTilePixelIndex(sample.pixelY, bitmap.height)
+                        val pixel = bitmap.getPixel(pixelX, pixelY)
+                        if (AndroidColor.alpha(pixel) == 0) continue
+                        val value = decodeTerrariumElevation(
+                            AndroidColor.red(pixel),
+                            AndroidColor.green(pixel),
+                            AndroidColor.blue(pixel)
+                        )
+                        if (value.isFinite()) {
+                            matrix[sample.row][sample.column] = value
+                            allValues.add(value)
+                        }
+                    }
+                } finally {
+                    bitmap.recycle()
+                }
             }
         }
         if (allValues.isEmpty()) throw IOException("DEM 瓦片没有返回有效高程数据")
@@ -1158,7 +1174,6 @@ private fun fetchElevationGrid(boundary: List<GeoCoordinate>): ElevationGrid {
             buildingError = buildingsAndError.second
         )
     } finally {
-        bitmaps.values.forEach { it.recycle() }
         executor.shutdownNow()
     }
 }
