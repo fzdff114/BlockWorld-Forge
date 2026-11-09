@@ -1,31 +1,28 @@
 # BlockWorld Forge
+Native Android application for planning Minecraft Bedrock worlds from real-world map data and procedural terrain.
 
-A responsive workspace for creating large Minecraft Bedrock worlds from real-world map data and procedural terrain.
+**The UI is native Kotlin + Jetpack Compose. It does not use HTML, CSS, JavaScript, WebView, or a website wrapped as an APK.**
 
-> Current stage: UI foundation / interactive frontend prototype. Map-data ingestion, terrain generation, and Bedrock export are planned modules and are not implemented yet.
+## 0.1.0 — Native UI foundation
+- Native Android dashboard and project draft creation
+- Android document picker entry point for local map files
+- World configuration: 4K / 6K / 10K / 15K / 20K, terrain styles and generation toggles
+- Asset library and Bedrock export screens
+- White canvas, blue primary actions, pale-blue highlights and native bottom navigation
 
-## Run locally
+**Current limitations:** Map parsing, map-provider adapters, terrain generation, persistent project storage, and real .mcworld export are not implemented yet. The file picker selects a local file and displays its name only.
 
-This first UI prototype is a static site and needs no build tool:
+## Build APK
+GitHub Actions builds a debug APK on every push to main.
+1. Open the repository's Actions tab.
+2. Open the latest Android APK run.
+3. Download the BlockWorld-Forge-Android-debug artifact.
+4. Extract the ZIP and install app-debug.apk on Android.
 
-1. Open `index.html` in a modern browser, or
-2. Serve the repository root with any static HTTP server.
+Local build: open this repository in Android Studio with JDK 17 and run the assembleDebug Gradle task.
 
-## Interface scope
-
-- Project dashboard and recent world projects
-- Map data import entry point (local file selection is UI-only in this stage)
-- World size, target edition, coordinate and terrain settings
-- Generation queue preview and progress-state demo
-- Responsive layout for desktop and mobile
-
-## Planned architecture
-
-- `web/`: UI prototype
-- `docs/`: product notes and implementation roadmap
-- `engine/`: future map-data and world-generation core
-- `exporters/`: future Minecraft Bedrock world exporter
-
-## Visual direction
-
-White canvas, blue primary actions, pale-blue highlights, cool-gray surfaces, restrained borders and clear typography.
+## Structure
+- app/src/main/java/com/fzdff/blockworldforge/ — native Compose application
+- app/src/main/res/values/ — Android theme
+- .github/workflows/android-apk.yml — APK build workflow
+- docs/ROADMAP.md — implementation roadmap
