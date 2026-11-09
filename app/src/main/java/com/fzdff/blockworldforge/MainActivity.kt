@@ -1,6 +1,8 @@
 package com.fzdff.blockworldforge
 
 import android.os.Bundle
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color as AndroidColor
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -61,6 +63,8 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.util.Locale
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
 import kotlin.math.*
 
 private val Accent = Color(0xFF356AE6)
@@ -75,35 +79,7 @@ private const val AREA_LINE_SOURCE = "atlas-area-line"
 private const val AREA_POINTS_SOURCE = "atlas-area-points"
 private const val EMPTY_FEATURES = """{"type":"FeatureCollection","features":[]}"""
 
-private const val TOPO_STYLE_JSON = """
-{
-  "version": 8,
-  "name": "Atlas Topographic",
-  "sources": {
-    "topography": {
-      "type": "raster",
-      "tiles": [
-        "https://a.tile.opentopomap.org/{z}/{x}/{y}.png",
-        "https://b.tile.opentopomap.org/{z}/{x}/{y}.png",
-        "https://c.tile.opentopomap.org/{z}/{x}/{y}.png"
-      ],
-      "tileSize": 256,
-      "minzoom": 0,
-      "maxzoom": 17,
-      "attribution": "Map data © OpenStreetMap contributors, SRTM | Map style © OpenTopoMap (CC-BY-SA)"
-    }
-  },
-  "layers": [
-    {
-      "id": "topography-layer",
-      "type": "raster",
-      "source": "topography",
-      "minzoom": 0,
-      "maxzoom": 17
-    }
-  ]
-}
-"""
+private const val BASE_STYLE_URI = "https://tiles.openfreemap.org/styles/liberty"
 
 private data class NavPage(val id: String, val title: String, val icon: ImageVector)
 
@@ -118,7 +94,12 @@ private val navPages = listOf(
 private val mapSizes = listOf(4000, 6000, 10000, 15000, 20000)
 
 private data class GeoCoordinate(val latitude: Double, val longitude: Double)
-private data class GridCell(val row: Int, val column: Int, val coordinate: GeoCoordinate)
+private data class OsmBuilding(
+    val polygon: List<GeoCoordinate>,
+    val heightMeters: Double,
+    val minHeightMeters: Double,
+    val name: String?
+)
 
 private data class ElevationGrid(
     val rows: Int,
@@ -127,7 +108,11 @@ private data class ElevationGrid(
     val minimum: Double,
     val maximum: Double,
     val average: Double,
-    val sampleCount: Int
+    val sampleCount: Int,
+    val resolutionMeters: Double,
+    val demZoom: Int,
+    val buildings: List<OsmBuilding>,
+    val buildingError: String? = null
 ) {
     val summary: String
         get() = "海拔 ${minimum.roundToInt()}–${maximum.roundToInt()} m"
@@ -168,7 +153,7 @@ class MainActivity : ComponentActivity() {
                 .zoom(4.2)
                 .build()
 
-            map.setStyle(Style.Builder().fromJson(TOPO_STYLE_JSON)) { style ->
+            map.setStyle(Style.Builder().fromUri(BASE_STYLE_URI)) { style ->
                 style.addSource(GeoJsonSource(AREA_FILL_SOURCE, EMPTY_FEATURES))
                 style.addSource(GeoJsonSource(AREA_LINE_SOURCE, EMPTY_FEATURES))
                 style.addSource(GeoJsonSource(AREA_POINTS_SOURCE, EMPTY_FEATURES))
@@ -305,7 +290,7 @@ private fun AtlasApp(mapView: MapView, map: MapLibreMap?) {
                     }
                     exportProgress = 1f
                     exportStatus = "已导出：" + report.widthBlocks + " × " + report.depthBlocks +
-                        " 格 · " + report.chunkCount + " 个区块"
+                        " 格 · " + report.chunkCount + " 个区块 · " + report.buildingCount + " 栋建筑"
                 } catch (error: Exception) {
                     exportStatus = "导出失败：" + (error.localizedMessage ?: "未知错误")
                 } finally {
@@ -593,6 +578,7 @@ private fun MapScreen(
     var coordinateQuery by rememberSaveable { mutableStateOf("39.9, 116.4") }
     var loading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf("") }
+    var show3d by rememberSaveable { mutableStateOf(false) }
 
     DisposableEffect(map) {
         if (map == null) {
@@ -637,9 +623,12 @@ private fun MapScreen(
                 onClick = {
                     val values = coordinateQuery.split(',', '，').mapNotNull { it.trim().toDoubleOrNull() }
                     if (values.size == 2 && values[0] in -85.0..85.0 && values[1] in -180.0..180.0) {
-                        map?.animateCamera(
-                            CameraUpdateFactory.newLatLngZoom(LatLng(values[0], values[1]), 12.0)
-                        )
+                        val camera = CameraPosition.Builder()
+                            .target(LatLng(values[0], values[1]))
+                            .zoom(16.0)
+                            .tilt(if (show3d) 55.0 else 0.0)
+                            .build()
+                        map?.animateCamera(CameraUpdateFactory.newCameraPosition(camera))
                     } else {
                         android.widget.Toast.makeText(context, "坐标格式为：纬度, 经度", android.widget.Toast.LENGTH_SHORT).show()
                     }
@@ -650,6 +639,25 @@ private fun MapScreen(
                 Icon(Icons.Outlined.MyLocation, contentDescription = null, modifier = Modifier.size(17.dp))
                 Spacer(Modifier.width(4.dp))
                 Text("定位", fontSize = 12.sp)
+            }
+            FilledTonalButton(
+                onClick = {
+                    show3d = !show3d
+                    map?.let {
+                        val current = it.cameraPosition
+                        val camera = CameraPosition.Builder()
+                            .target(current.target)
+                            .zoom(current.zoom)
+                            .bearing(current.bearing)
+                            .tilt(if (show3d) 55.0 else 0.0)
+                            .build()
+                        it.animateCamera(CameraUpdateFactory.newCameraPosition(camera))
+                    }
+                },
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text(if (show3d) "平面" else "3D", fontSize = 12.sp)
             }
         }
 
@@ -726,6 +734,9 @@ private fun MapScreen(
                                 try {
                                     val result = withContext(Dispatchers.IO) { fetchElevationGrid(snapshot) }
                                     onElevationReady(result)
+                                    if (result.buildingError != null) {
+                                        errorMessage = "地形已采集；建筑数据未取得：" + result.buildingError
+                                    }
                                 } catch (_: Exception) {
                                     errorMessage = "高程数据获取失败，请检查网络后重试"
                                 } finally {
@@ -745,7 +756,7 @@ private fun MapScreen(
                             Icon(Icons.Outlined.Terrain, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(5.dp))
                         }
-                        Text(if (loading) "采集中" else "采集高程", fontSize = 12.sp)
+                        Text(if (loading) "采集中" else "采集地形+建筑", fontSize = 12.sp)
                     }
                     Button(
                         onClick = onSaveRegion,
@@ -765,7 +776,7 @@ private fun MapScreen(
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                             Text(grid.summary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Ink)
                             Text(
-                                "平均 ${grid.average.roundToInt()} m · ${grid.sampleCount} 个采样点",
+                                "平均 ${grid.average.roundToInt()} m · ${grid.sampleCount} 点 · ${grid.resolutionMeters.roundToInt()} m 网格 · 建筑 ${grid.buildings.size} 栋",
                                 fontSize = 10.sp,
                                 color = Muted
                             )
@@ -787,7 +798,7 @@ private fun MapScreen(
                     Text(errorMessage, color = MaterialTheme.colorScheme.error, fontSize = 10.sp)
                 }
                 Text(
-                    "地图 © OpenStreetMap · SRTM · OpenTopoMap",
+                    "OpenFreeMap © OpenMapTiles · OpenStreetMap contributors (ODbL) · DEM © Mapzen",
                     fontSize = 9.sp,
                     color = Muted
                 )
@@ -909,86 +920,262 @@ private fun isInsidePolygon(point: GeoCoordinate, polygon: List<GeoCoordinate>):
     return inside
 }
 
-private fun fetchElevationGrid(boundary: List<GeoCoordinate>): ElevationGrid {
-    require(boundary.size >= 3) { "At least three boundary points are required" }
-    val rows = 20
-    val columns = 20
-    val south = boundary.minOf { it.latitude }
-    val north = boundary.maxOf { it.latitude }
-    val west = boundary.minOf { it.longitude }
-    val east = boundary.maxOf { it.longitude }
+private data class TerrariumPixel(
+    val row: Int,
+    val column: Int,
+    val tileX: Int,
+    val tileY: Int,
+    val pixelX: Int,
+    val pixelY: Int
+)
 
-    val slots = mutableListOf<GridCell>()
-    for (row in 0 until rows) {
-        val latitude = if (rows == 1) (north + south) / 2.0 else north - (north - south) * row / (rows - 1)
-        for (column in 0 until columns) {
-            val longitude = if (columns == 1) (west + east) / 2.0 else west + (east - west) * column / (columns - 1)
-            val point = GeoCoordinate(latitude, longitude)
-            if (isInsidePolygon(point, boundary)) {
-                slots.add(GridCell(row, column, point))
-            }
-        }
-    }
+private fun terrariumTilePosition(longitude: Double, latitude: Double, zoom: Int): Triple<Int, Int, Pair<Int, Int>> {
+    val tileCount = 1 shl zoom
+    val safeLatitude = latitude.coerceIn(-85.05112878, 85.05112878)
+    val longitudeWorld = ((longitude + 180.0) / 360.0 * tileCount).coerceIn(0.0, tileCount - 1e-9)
+    val latRadians = Math.toRadians(safeLatitude)
+    val mercator = (1.0 - ln(tan(latRadians) + 1.0 / cos(latRadians)) / Math.PI) / 2.0
+    val latitudeWorld = (mercator * tileCount).coerceIn(0.0, tileCount - 1e-9)
+    val tileX = floor(longitudeWorld).toInt()
+    val tileY = floor(latitudeWorld).toInt()
+    val px = ((longitudeWorld - tileX) * 256.0).toInt().coerceIn(0, 255)
+    val py = ((latitudeWorld - tileY) * 256.0).toInt().coerceIn(0, 255)
+    return Triple(tileX, tileY, px to py)
+}
 
-    if (slots.isEmpty()) {
-        val center = GeoCoordinate(
-            boundary.map { it.latitude }.average(),
-            boundary.map { it.longitude }.average()
+internal fun decodeTerrariumElevation(red: Int, green: Int, blue: Int): Double {
+    return (red * 256.0 + green + blue / 256.0) - 32768.0
+}
+
+internal fun terrariumTilePixelIndex(pixel256: Int, tileDimension: Int): Int {
+    val hasBuffer = tileDimension == 260 || tileDimension == 516
+    val buffer = if (hasBuffer) 2 else 0
+    val usefulPixels = tileDimension - buffer * 2
+    return (buffer + (pixel256.coerceIn(0, 255) / 256.0 * usefulPixels))
+        .toInt()
+        .coerceIn(0, tileDimension - 1)
+}
+
+private fun chooseTerrariumZoom(west: Double, east: Double, south: Double, north: Double): Int {
+    for (zoom in 15 downTo 8) {
+        val corners = listOf(
+            terrariumTilePosition(west, north, zoom),
+            terrariumTilePosition(east, north, zoom),
+            terrariumTilePosition(west, south, zoom),
+            terrariumTilePosition(east, south, zoom)
         )
-        slots.add(GridCell(rows / 2, columns / 2, center))
+        val tileWidth = corners.maxOf { it.first } - corners.minOf { it.first } + 1
+        val tileHeight = corners.maxOf { it.second } - corners.minOf { it.second } + 1
+        if (tileWidth.toLong() * tileHeight.toLong() <= 64L) return zoom
     }
+    return 8
+}
 
-    val cells = MutableList(rows) { MutableList<Double?>(columns) { null } }
-    val allValues = mutableListOf<Double>()
-
-    slots.chunked(100).forEach { batch ->
-        val latitudeParam = URLEncoder.encode(batch.joinToString(",") { it.coordinate.latitude.toString() }, "UTF-8")
-        val longitudeParam = URLEncoder.encode(batch.joinToString(",") { it.coordinate.longitude.toString() }, "UTF-8")
-        val endpoint = URL("https://api.open-meteo.com/v1/elevation?latitude=$latitudeParam&longitude=$longitudeParam")
-        val connection = (endpoint.openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 20000
-            readTimeout = 20000
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "Atlas-Android/0.2.0")
+private fun downloadTerrariumTile(x: Int, y: Int, zoom: Int): Bitmap {
+    val endpoint = URL("https://s3.amazonaws.com/elevation-tiles-prod/terrarium/$zoom/$x/$y.png")
+    val connection = (endpoint.openConnection() as HttpURLConnection).apply {
+        requestMethod = "GET"
+        connectTimeout = 20000
+        readTimeout = 30000
+        setRequestProperty("Accept", "image/png")
+        setRequestProperty("User-Agent", "Atlas-Android/0.4.0 (real-world Bedrock map)")
+    }
+    try {
+        val status = connection.responseCode
+        if (status !in 200..299) {
+            throw IOException("DEM 瓦片请求失败 HTTP $status（z=$zoom x=$x y=$y）")
         }
+        val bitmap = connection.inputStream.use { BitmapFactory.decodeStream(it) }
+            ?: throw IOException("DEM 瓦片无法解码（z=$zoom x=$x y=$y）")
+        if (bitmap.width < 256 || bitmap.height < 256) {
+            bitmap.recycle()
+            throw IOException("DEM 瓦片尺寸不正确")
+        }
+        return bitmap
+    } finally {
+        connection.disconnect()
+    }
+}
 
+private fun parseOsmHeight(tags: JSONObject, key: String): Double? {
+    val raw = tags.optString(key).trim()
+    if (raw.isBlank() || raw == "null") return null
+    val number = Regex("[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)").find(raw.replace(',', '.'))?.value
+        ?.toDoubleOrNull()
+    return number?.takeIf { it.isFinite() && it >= 0.0 }
+}
+
+private fun fetchOsmBuildings(west: Double, east: Double, south: Double, north: Double): List<OsmBuilding> {
+    val query = "[out:json][timeout:60][maxsize:67108864];(" +
+        "way[\"building\"]($south,$west,$north,$east);" +
+        "relation[\"building\"]($south,$west,$north,$east);" +
+        ");out tags geom;"
+    val endpoints = listOf(
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.kumi.systems/api/interpreter"
+    )
+    var lastError: Exception? = null
+    for (endpointUrl in endpoints) {
+        val connection = (URL(endpointUrl).openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            doOutput = true
+            connectTimeout = 20000
+            readTimeout = 90000
+            setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+            setRequestProperty("Accept", "application/json")
+            setRequestProperty("User-Agent", "Atlas-Android/0.4.0 (OpenStreetMap building import)")
+        }
         try {
+            val request = ("data=" + URLEncoder.encode(query, "UTF-8")).toByteArray(Charsets.UTF_8)
+            connection.outputStream.use { it.write(request) }
             val status = connection.responseCode
-            val body = if (status in 200..299) {
-                connection.inputStream.bufferedReader().use { it.readText() }
-            } else {
+            if (status !in 200..299) {
                 val details = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
-                throw IOException("Elevation service returned HTTP $status $details")
+                throw IOException("OSM 建筑服务 HTTP $status " + details.take(180))
             }
-            val elevations = JSONObject(body).optJSONArray("elevation")
-                ?: throw IOException("Elevation response did not contain values")
-            if (elevations.length() != batch.size) throw IOException("Elevation count mismatch")
-
-            batch.forEachIndexed { index, slot ->
-                val value = elevations.getDouble(index)
-                if (value.isFinite()) {
-                    allValues.add(value)
-                    if (slot.row >= 0 && slot.column >= 0) {
-                        cells[slot.row][slot.column] = value
+            val body = connection.inputStream.bufferedReader().use { it.readText() }
+            val elements = JSONObject(body).optJSONArray("elements") ?: JSONArray()
+            val buildings = ArrayList<OsmBuilding>()
+            for (i in 0 until elements.length()) {
+                if (buildings.size >= 10000) break
+                val element = elements.optJSONObject(i) ?: continue
+                val tags = element.optJSONObject("tags") ?: JSONObject()
+                val height = parseOsmHeight(tags, "height")
+                    ?: (parseOsmHeight(tags, "building:levels")?.times(3.2))
+                    ?: 8.0
+                val minHeight = parseOsmHeight(tags, "min_height")
+                    ?: (parseOsmHeight(tags, "building:min_level")?.times(3.2))
+                    ?: 0.0
+                val name = tags.optString("name").takeIf { it.isNotBlank() && it != "null" }
+                val geometries = mutableListOf<JSONArray>()
+                val direct = element.optJSONArray("geometry")
+                if (direct != null) {
+                    geometries.add(direct)
+                } else {
+                    val members = element.optJSONArray("members") ?: continue
+                    for (memberIndex in 0 until members.length()) {
+                        val member = members.optJSONObject(memberIndex) ?: continue
+                        if (member.optString("type") != "way" || member.optString("role") == "inner") continue
+                        member.optJSONArray("geometry")?.let { geometries.add(it) }
+                    }
+                }
+                for (geometry in geometries) {
+                    if (buildings.size >= 20000) break
+                    val polygon = (0 until geometry.length()).mapNotNull { pointIndex ->
+                        val point = geometry.optJSONObject(pointIndex) ?: return@mapNotNull null
+                        val lat = point.optDouble("lat", Double.NaN)
+                        val lon = point.optDouble("lon", Double.NaN)
+                        if (!lat.isFinite() || !lon.isFinite()) null else GeoCoordinate(lat, lon)
+                    }
+                    if (polygon.size >= 4) {
+                        buildings.add(
+                            OsmBuilding(
+                                polygon = polygon,
+                                heightMeters = height.coerceAtLeast(3.0),
+                                minHeightMeters = minHeight.coerceAtLeast(0.0),
+                                name = name
+                            )
+                        )
                     }
                 }
             }
+            return buildings
+        } catch (error: Exception) {
+            lastError = error
         } finally {
             connection.disconnect()
         }
     }
+    throw IOException(lastError?.localizedMessage ?: "OSM 建筑数据暂不可用")
+}
 
-    if (allValues.isEmpty()) throw IOException("No elevation samples were returned")
-    return ElevationGrid(
-        rows = rows,
-        columns = columns,
-        values = cells.map { it.toList() },
-        minimum = allValues.minOrNull() ?: 0.0,
-        maximum = allValues.maxOrNull() ?: 0.0,
-        average = allValues.average(),
-        sampleCount = allValues.size
-    )
+private fun fetchElevationGrid(boundary: List<GeoCoordinate>): ElevationGrid {
+    require(boundary.size >= 3) { "At least three boundary points are required" }
+    val south = boundary.minOf { it.latitude }
+    val north = boundary.maxOf { it.latitude }
+    val west = boundary.minOf { it.longitude }
+    val east = boundary.maxOf { it.longitude }
+    val centerLatitude = (north + south) / 2.0
+    val centerLongitude = (east + west) / 2.0
+    val widthMeters = haversineMeters(centerLatitude, west, centerLatitude, east)
+    val depthMeters = haversineMeters(south, centerLongitude, north, centerLongitude)
+
+    // Sample a 20 m grid, capped at 512 × 512 to bound project size and RAM.
+    val columns = ceil(widthMeters / 20.0).toInt().coerceIn(2, 384)
+    val rows = ceil(depthMeters / 20.0).toInt().coerceIn(2, 512)
+    val resolutionMeters = max(widthMeters / columns, depthMeters / rows)
+    val zoom = chooseTerrariumZoom(west, east, south, north)
+    val matrix = MutableList(rows) { MutableList<Double?>(columns) { null } }
+    val pixels = ArrayList<TerrariumPixel>()
+
+    for (row in 0 until rows) {
+        val latitude = north - ((row + 0.5) / rows.toDouble()) * (north - south)
+        for (column in 0 until columns) {
+            val longitude = west + ((column + 0.5) / columns.toDouble()) * (east - west)
+            // Sample the complete bounding grid; export still masks every voxel to the chosen polygon.
+            // Neighbor samples just outside the boundary prevent expensive nearest-point fallbacks at its edge.
+            val tile = terrariumTilePosition(longitude, latitude, zoom)
+            pixels.add(TerrariumPixel(row, column, tile.first, tile.second, tile.third.first, tile.third.second))
+        }
+    }
+    if (pixels.isEmpty()) throw IOException("圈选范围内没有有效地形采样点")
+
+    val tileKeys = pixels.map { it.tileX to it.tileY }.distinct()
+    if (tileKeys.size > 64) throw IOException("当前区域需要下载过多 DEM 瓦片，请缩小圈选范围")
+    val executor = Executors.newFixedThreadPool(4)
+    try {
+        val samplesByTile = pixels.groupBy { it.tileX to it.tileY }
+        val allValues = ArrayList<Double>(pixels.size)
+        // Keep at most four decoded PNG tiles alive at once on mobile devices.
+        for (tileBatch in tileKeys.chunked(4)) {
+            val futures = tileBatch.map { key ->
+                key to executor.submit(Callable { downloadTerrariumTile(key.first, key.second, zoom) })
+            }
+            for ((key, future) in futures) {
+                val bitmap = future.get()
+                try {
+                    for (sample in samplesByTile[key].orEmpty()) {
+                        val pixelX = terrariumTilePixelIndex(sample.pixelX, bitmap.width)
+                        val pixelY = terrariumTilePixelIndex(sample.pixelY, bitmap.height)
+                        val pixel = bitmap.getPixel(pixelX, pixelY)
+                        if (AndroidColor.alpha(pixel) == 0) continue
+                        val value = decodeTerrariumElevation(
+                            AndroidColor.red(pixel),
+                            AndroidColor.green(pixel),
+                            AndroidColor.blue(pixel)
+                        )
+                        if (value.isFinite()) {
+                            matrix[sample.row][sample.column] = value
+                            allValues.add(value)
+                        }
+                    }
+                } finally {
+                    bitmap.recycle()
+                }
+            }
+        }
+        if (allValues.isEmpty()) throw IOException("DEM 瓦片没有返回有效高程数据")
+        val buildingsAndError = try {
+            fetchOsmBuildings(west, east, south, north) to null
+        } catch (error: Exception) {
+            emptyList<OsmBuilding>() to (error.localizedMessage ?: "建筑数据服务不可用")
+        }
+        return ElevationGrid(
+            rows = rows,
+            columns = columns,
+            values = matrix.map { it.toList() },
+            minimum = allValues.minOrNull() ?: 0.0,
+            maximum = allValues.maxOrNull() ?: 0.0,
+            average = allValues.average(),
+            sampleCount = allValues.size,
+            resolutionMeters = resolutionMeters,
+            demZoom = zoom,
+            buildings = buildingsAndError.first,
+            buildingError = buildingsAndError.second
+        )
+    } finally {
+        executor.shutdownNow()
+    }
 }
 
 
@@ -1037,8 +1224,27 @@ private fun saveProjects(context: android.content.Context, projects: List<WorldP
 private fun regionDraftJson(region: RegionDraft): String {
     val root = JSONObject()
     root.put("format", "atlas-region-heightmap-v1")
-    root.put("elevationSource", "Copernicus DEM GLO-90 via Open-Meteo")
-    root.put("elevationResolutionMeters", 90)
+    root.put("elevationSource", "Mapzen Terrain Tiles (Terrarium) via AWS")
+    region.elevation?.let { grid ->
+        root.put("elevationResolutionMeters", grid.resolutionMeters)
+        root.put("elevationZoom", grid.demZoom)
+        root.put("buildingSource", "OpenStreetMap / Overpass API")
+        val buildings = JSONArray()
+        grid.buildings.forEach { building ->
+            val item = JSONObject()
+            val polygon = JSONArray()
+            building.polygon.forEach { point ->
+                polygon.put(JSONArray().put(point.longitude).put(point.latitude))
+            }
+            item.put("boundaryLonLat", polygon)
+            item.put("heightMeters", building.heightMeters)
+            item.put("minHeightMeters", building.minHeightMeters)
+            item.put("name", building.name ?: JSONObject.NULL)
+            buildings.put(item)
+        }
+        root.put("osmBuildings", buildings)
+        root.put("buildingCount", grid.buildings.size)
+    }
     root.put("regionWidthKm", region.widthKm)
     root.put("regionHeightKm", region.heightKm)
 

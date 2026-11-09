@@ -38,7 +38,8 @@ internal data class BedrockExportReport(
     val archiveBytes: Long,
     val metersPerBlock: Int,
     val minimumElevation: Double,
-    val maximumElevation: Double
+    val maximumElevation: Double,
+    val buildingCount: Int
 )
 
 internal object BedrockWorldExporter {
@@ -66,8 +67,25 @@ internal object BedrockWorldExporter {
     private const val GRASS = 4
     private const val SAND = 5
     private const val WATER = 6
+    private const val BUILDING_WALL = 7
+    private const val BUILDING_ROOF = 8
 
     private data class Point(val longitude: Double, val latitude: Double)
+    private data class BlockPoint(val x: Double, val z: Double)
+    private data class BuildingFootprint(
+        val polygon: List<Point>,
+        val heightMeters: Double,
+        val minHeightMeters: Double
+    )
+    private data class IndexedBuilding(
+        val polygon: List<BlockPoint>,
+        val minX: Int,
+        val maxX: Int,
+        val minZ: Int,
+        val maxZ: Int,
+        val heightBlocks: Int,
+        val baseOffsetBlocks: Int
+    )
     private data class TerrainInput(
         val polygon: List<Point>,
         val west: Double,
@@ -77,6 +95,7 @@ internal object BedrockWorldExporter {
         val rows: Int,
         val columns: Int,
         val values: Array<Double?>,
+        val buildings: List<BuildingFootprint>,
         val minimum: Double,
         val maximum: Double,
         val widthMeters: Double,
@@ -114,6 +133,12 @@ internal object BedrockWorldExporter {
             )
 
             File(worldFolder, "levelname.txt").writeText(worldName.take(64), Charsets.UTF_8)
+            File(worldFolder, "atlas_attribution.txt").writeText(
+                "Terrain elevation: Mapzen Terrain Tiles, AWS Open Data; source data includes SRTM and other open datasets.\n" +
+                    "Building footprints: © OpenStreetMap contributors, licensed under ODbL.\n" +
+                    "Map style: OpenFreeMap © OpenMapTiles; data © OpenStreetMap contributors.\n",
+                Charsets.UTF_8
+            )
             val spawn = chooseSpawn(input, metersPerBlock)
             val levelDat = encodeLevelDat(
                 worldName = worldName,
@@ -138,7 +163,8 @@ internal object BedrockWorldExporter {
                 archiveBytes = archiveBytes,
                 metersPerBlock = metersPerBlock,
                 minimumElevation = input.minimum,
-                maximumElevation = input.maximum
+                maximumElevation = input.maximum,
+                buildingCount = input.buildings.size
             )
         } finally {
             if (!exportCompleted) {
@@ -303,6 +329,30 @@ internal object BedrockWorldExporter {
         val north = boundary.maxOf { it.latitude }
         require(east > west && north > south && east - west < 180.0) { "当前选区范围无法转换，请重新圈选" }
 
+        val buildingsJson = root.optJSONArray("osmBuildings") ?: JSONArray()
+        val buildings = ArrayList<BuildingFootprint>()
+        for (index in 0 until buildingsJson.length()) {
+            val item = buildingsJson.optJSONObject(index) ?: continue
+            val geometry = item.optJSONArray("boundaryLonLat") ?: continue
+            val points = (0 until geometry.length()).mapNotNull { pointIndex ->
+                val pair = geometry.optJSONArray(pointIndex) ?: return@mapNotNull null
+                if (pair.length() < 2) return@mapNotNull null
+                val longitude = pair.optDouble(0, Double.NaN)
+                val latitude = pair.optDouble(1, Double.NaN)
+                if (!longitude.isFinite() || !latitude.isFinite()) null else Point(longitude, latitude)
+            }
+            if (points.size >= 4) {
+                buildings.add(
+                    BuildingFootprint(
+                        polygon = points,
+                        heightMeters = item.optDouble("heightMeters", 8.0).coerceAtLeast(3.0),
+                        minHeightMeters = item.optDouble("minHeightMeters", 0.0).coerceAtLeast(0.0)
+                    )
+                )
+                if (buildings.size >= 20000) break
+            }
+        }
+
         val centerLatitude = (north + south) / 2.0
         val centerLongitude = (east + west) / 2.0
         val widthMeters = root.optDouble("regionWidthKm", Double.NaN).takeIf { it.isFinite() && it > 0.0 }
@@ -319,6 +369,7 @@ internal object BedrockWorldExporter {
             rows = rows,
             columns = columns,
             values = values,
+            buildings = buildings,
             minimum = valid.minOrNull() ?: 0.0,
             maximum = valid.maxOrNull() ?: 0.0,
             widthMeters = widthMeters,
@@ -351,6 +402,7 @@ internal object BedrockWorldExporter {
             max(0.0, input.maximum) / 280.0
         )
         val worldFloorY = terrainFloorY(input.minimum, input.maximum, metersPerBlock)
+        val indexedBuildings = indexBuildings(input, size, verticalMetersPerBlock)
         val sink = DatabaseBatchSink(db)
 
         try {
@@ -360,12 +412,22 @@ internal object BedrockWorldExporter {
                 for (tileX in 0 until chunksX step TILE_CHUNKS) {
                     val tileEndZ = min(chunksZ, tileZ + TILE_CHUNKS)
                     val tileEndX = min(chunksX, tileX + TILE_CHUNKS)
+                    val tileMinX = tileX * 16
+                    val tileMaxX = min(size.width - 1, tileEndX * 16 - 1)
+                    val tileMinZ = tileZ * 16
+                    val tileMaxZ = min(size.depth - 1, tileEndZ * 16 - 1)
+                    val tileBuildings = indexedBuildings.filter { building ->
+                        building.maxX >= tileMinX && building.minX <= tileMaxX &&
+                            building.maxZ >= tileMinZ && building.minZ <= tileMaxZ
+                    }
 
                     for (chunkZ in tileZ until tileEndZ) {
                         for (chunkX in tileX until tileEndX) {
                             processedChunks++
                             val sections = HashMap<Int, IntArray>()
                             val heightMap = IntArray(256) { worldFloorY }
+                            val surfaceYMap = IntArray(256) { worldFloorY }
+                            val hasSurface = BooleanArray(256)
                             var columnsInChunk = 0
 
                             for (localZ in 0 until 16) {
@@ -388,19 +450,39 @@ internal object BedrockWorldExporter {
                                         setBlock(sections, localX, y, localZ, DIRT)
                                     }
                                     setBlock(sections, localX, surfaceY, localZ, if (elevation < 0.0) SAND else GRASS)
+                                    val columnIndex = localZ * 16 + localX
+                                    surfaceYMap[columnIndex] = surfaceY
+                                    hasSurface[columnIndex] = true
                                     if (surfaceY < SEA_LEVEL) {
                                         for (y in surfaceY + 1..SEA_LEVEL) {
                                             setBlock(sections, localX, y, localZ, WATER)
                                         }
-                                        heightMap[localZ * 16 + localX] = SEA_LEVEL + 1
+                                        heightMap[columnIndex] = SEA_LEVEL + 1
                                     } else {
-                                        heightMap[localZ * 16 + localX] = surfaceY + 1
+                                        heightMap[columnIndex] = surfaceY + 1
                                     }
                                     columnsInChunk++
                                 }
                             }
 
                             if (columnsInChunk > 0) {
+                                val chunkMinX = chunkX * 16
+                                val chunkMaxX = min(size.width - 1, chunkMinX + 15)
+                                val chunkMinZ = chunkZ * 16
+                                val chunkMaxZ = min(size.depth - 1, chunkMinZ + 15)
+                                if (tileBuildings.isNotEmpty()) {
+                                    applyBuildings(
+                                        sections = sections,
+                                        heightMap = heightMap,
+                                        surfaceYMap = surfaceYMap,
+                                        hasSurface = hasSurface,
+                                        buildings = tileBuildings,
+                                        chunkMinX = chunkMinX,
+                                        chunkMaxX = chunkMaxX,
+                                        chunkMinZ = chunkMinZ,
+                                        chunkMaxZ = chunkMaxZ
+                                    )
+                                }
                                 val versionKey = chunkKey(chunkX, chunkZ, TAG_VERSION)
                                 val data3dKey = chunkKey(chunkX, chunkZ, TAG_DATA_3D)
                                 val finalizedKey = chunkKey(chunkX, chunkZ, TAG_FINALIZED)
@@ -493,6 +575,96 @@ internal object BedrockWorldExporter {
         } finally {
             verify.close()
         }
+    }
+
+    internal fun buildingHeightBlocks(heightMeters: Double, verticalMetersPerBlock: Double): Int {
+        require(heightMeters >= 0.0 && verticalMetersPerBlock > 0.0)
+        return ceil(heightMeters / verticalMetersPerBlock).toInt().coerceIn(2, 96)
+    }
+
+    private fun indexBuildings(
+        input: TerrainInput,
+        size: GridSize,
+        verticalMetersPerBlock: Double
+    ): List<IndexedBuilding> {
+        return input.buildings.mapNotNull { building ->
+            if (building.polygon.size < 4) return@mapNotNull null
+            val polygon = building.polygon.map { point ->
+                BlockPoint(
+                    x = ((point.longitude - input.west) / (input.east - input.west)) * size.width,
+                    z = ((input.north - point.latitude) / (input.north - input.south)) * size.depth
+                )
+            }
+            val minX = floor(polygon.minOf { it.x }).toInt().coerceAtLeast(0)
+            val maxX = ceil(polygon.maxOf { it.x }).toInt().coerceAtMost(size.width - 1)
+            val minZ = floor(polygon.minOf { it.z }).toInt().coerceAtLeast(0)
+            val maxZ = ceil(polygon.maxOf { it.z }).toInt().coerceAtMost(size.depth - 1)
+            if (minX > maxX || minZ > maxZ) return@mapNotNull null
+            IndexedBuilding(
+                polygon = polygon,
+                minX = minX,
+                maxX = maxX,
+                minZ = minZ,
+                maxZ = maxZ,
+                heightBlocks = buildingHeightBlocks(building.heightMeters, verticalMetersPerBlock),
+                baseOffsetBlocks = floor(building.minHeightMeters / verticalMetersPerBlock)
+                    .toInt().coerceIn(0, 96)
+            )
+        }
+    }
+
+    private fun applyBuildings(
+        sections: MutableMap<Int, IntArray>,
+        heightMap: IntArray,
+        surfaceYMap: IntArray,
+        hasSurface: BooleanArray,
+        buildings: List<IndexedBuilding>,
+        chunkMinX: Int,
+        chunkMaxX: Int,
+        chunkMinZ: Int,
+        chunkMaxZ: Int
+    ) {
+        for (building in buildings) {
+            val startX = max(chunkMinX, building.minX)
+            val endX = min(chunkMaxX, building.maxX)
+            val startZ = max(chunkMinZ, building.minZ)
+            val endZ = min(chunkMaxZ, building.maxZ)
+            if (startX > endX || startZ > endZ) continue
+
+            for (worldZ in startZ..endZ) {
+                for (worldX in startX..endX) {
+                    if (!insideBlockPolygon(worldX + 0.5, worldZ + 0.5, building.polygon)) continue
+                    val localX = worldX - chunkMinX
+                    val localZ = worldZ - chunkMinZ
+                    val index = localZ * 16 + localX
+                    if (!hasSurface[index]) continue
+                    val groundY = surfaceYMap[index]
+                    if (groundY < SEA_LEVEL) continue
+                    val baseY = groundY + 1 + building.baseOffsetBlocks
+                    val roofY = groundY + building.heightBlocks
+                    if (roofY <= baseY || roofY > MAX_Y - 1) continue
+                    for (y in baseY until roofY) {
+                        setBlock(sections, localX, y, localZ, BUILDING_WALL)
+                    }
+                    setBlock(sections, localX, roofY, localZ, BUILDING_ROOF)
+                    heightMap[index] = max(heightMap[index], roofY + 1)
+                }
+            }
+        }
+    }
+
+    private fun insideBlockPolygon(x: Double, z: Double, polygon: List<BlockPoint>): Boolean {
+        var inside = false
+        var j = polygon.lastIndex
+        for (i in polygon.indices) {
+            val a = polygon[i]
+            val b = polygon[j]
+            val crosses = ((a.z > z) != (b.z > z)) &&
+                (x < (b.x - a.x) * (z - a.z) / ((b.z - a.z) + 1e-12) + a.x)
+            if (crosses) inside = !inside
+            j = i
+        }
+        return inside
     }
 
     private fun coordinateAt(input: TerrainInput, size: GridSize, x: Int, z: Int): Point {
@@ -644,6 +816,8 @@ internal object BedrockWorldExporter {
         GRASS -> "minecraft:grass_block"
         SAND -> "minecraft:sand"
         WATER -> "minecraft:water"
+        BUILDING_WALL -> "minecraft:bricks"
+        BUILDING_ROOF -> "minecraft:stone_bricks"
         else -> throw IllegalArgumentException("未知方块 ID：" + blockId)
     }
 
