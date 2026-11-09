@@ -10,8 +10,8 @@ android {
         applicationId = "com.fzdff.blockworldforge"
         minSdk = 24
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.1.2"
+        versionCode = 4
+        versionName = "0.2.0"
     }
     buildFeatures { compose = true }
     compileOptions {
@@ -28,5 +28,7 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
+    implementation("org.maplibre.gl:android-sdk-opengl:13.7.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
