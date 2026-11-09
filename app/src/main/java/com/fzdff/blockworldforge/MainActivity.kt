@@ -98,8 +98,8 @@ private val navPages = listOf(
 
 private val mapSizes = listOf(4000, 6000, 10000, 15000, 20000)
 
-private data class GeoCoordinate(val latitude: Double, val longitude: Double)
-private data class OsmBuilding(
+internal data class GeoCoordinate(val latitude: Double, val longitude: Double)
+internal data class OsmBuilding(
     val polygon: List<GeoCoordinate>,
     val heightMeters: Double,
     val minHeightMeters: Double,
@@ -677,6 +677,7 @@ private fun MapScreen(
     var locating by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
     var captureStatus by remember { mutableStateOf("") }
+    var captureNotice by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf("") }
     var show3d by rememberSaveable { mutableStateOf(false) }
     var selectionMode by rememberSaveable { mutableStateOf("矩形") }
@@ -960,9 +961,21 @@ private fun MapScreen(
                             val snapshot = selectedPoints.toList()
                             loading = true
                             errorMessage = ""
+                            captureNotice = ""
                             scope.launch {
                                 try {
-                                    captureStatus = "准备下载高程瓦片…"
+                                    captureStatus = "读取地图底图中的建筑矢量…"
+                                    val mapReadResult = runCatching {
+                                        if (map == null) emptyList()
+                                        else RenderedMapBuildingReader.readVisibleBuildings(
+                                            map = map,
+                                            mapView = mapView,
+                                            boundary = snapshot
+                                        ).buildings
+                                    }
+                                    val renderedMapBuildings = mapReadResult.getOrDefault(emptyList())
+                                    val mapReadWarning = mapReadResult.exceptionOrNull()?.localizedMessage
+                                    captureStatus = "底图已读出 ${renderedMapBuildings.size} 栋建筑；下载高程瓦片…"
                                     val result = withContext(Dispatchers.IO) {
                                         fetchElevationGrid(context, snapshot, terrainSampleSpacing) { phase, completed, total ->
                                             scope.launch {
@@ -974,16 +987,32 @@ private fun MapScreen(
                                             }
                                         }
                                     }
-                                    val mergedBuildings = mergeBuildingSources(importedBuildings, result.buildings)
+                                    // Source priority: imported China building-height data,
+                                    // then polygons already rendered by the basemap, then Overpass.
+                                    val basemapAndOsm = mergeBuildingSources(renderedMapBuildings, result.buildings)
+                                    val mergedBuildings = mergeBuildingSources(importedBuildings, basemapAndOsm)
                                     val combined = result.copy(
                                         buildings = mergedBuildings,
                                         buildingError = if (mergedBuildings.isEmpty()) result.buildingError else null
                                     )
                                     onElevationReady(combined)
+                                    val basemapCount = mergedBuildings.count {
+                                        it.source.startsWith("OpenFreeMap")
+                                    }
+                                    val chinaCount = mergedBuildings.count {
+                                        it.source.contains("3D-GloBFP") ||
+                                            it.source.contains("China Urban Building Footprint Height Dataset")
+                                    }
+                                    val osmCount = mergedBuildings.count { it.source.startsWith("OpenStreetMap") }
                                     if (combined.buildingError != null) {
-                                        errorMessage = "地形已采集；建筑数据未取得：" + combined.buildingError
-                                    } else if (importedBuildings.isNotEmpty()) {
-                                        errorMessage = "地形及中国逐栋建筑数据已采集：${importedBuildings.size} 栋导入建筑"
+                                        errorMessage = "地形已采集，但三种来源均未取得建筑：" +
+                                            combined.buildingError +
+                                            "。请把选区移动到视口中央，缩放到建筑可见的街区级别，等待楼块显示后重新采集。"
+                                    } else {
+                                        captureNotice = "读取完成：地图底图 ${basemapCount} 栋 · 中国数据 ${chinaCount} 栋 · OSM ${osmCount} 栋 · 合计 ${mergedBuildings.size} 栋"
+                                        if (!mapReadWarning.isNullOrBlank()) {
+                                            captureNotice += "（底图查询提示：" + mapReadWarning + "）"
+                                        }
                                     }
                                 } catch (error: Exception) {
                                     errorMessage = "采集失败：" + (error.localizedMessage ?: "请检查网络后重试")
@@ -1006,7 +1035,7 @@ private fun MapScreen(
                             Spacer(Modifier.width(5.dp))
                         }
                         Text(
-                            if (loading) captureStatus.ifBlank { "采集中" } else "采集地形+建筑",
+                            if (loading) captureStatus.ifBlank { "采集中" } else "采集地形+地图建筑",
                             fontSize = 11.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -1029,10 +1058,22 @@ private fun MapScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                             Text(grid.summary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Ink)
+                            val basemapCount = grid.buildings.count { it.source.startsWith("OpenFreeMap") }
+                            val chinaCount = grid.buildings.count {
+                                it.source.contains("3D-GloBFP") ||
+                                    it.source.contains("China Urban Building Footprint Height Dataset")
+                            }
+                            val osmCount = grid.buildings.count { it.source.startsWith("OpenStreetMap") }
                             Text(
-                                "平均 ${grid.average.roundToInt()} m · ${grid.sampleCount} 点 · ${grid.resolutionMeters.roundToInt()} m 网格 · 建筑 ${grid.buildings.size} 栋",
+                                "平均 ${grid.average.roundToInt()} m · ${grid.sampleCount} 点 · ${grid.resolutionMeters.roundToInt()} m 网格",
                                 fontSize = 10.sp,
                                 color = Muted
+                            )
+                            Text(
+                                "建筑：底图 ${basemapCount} · 中国 ${chinaCount} · OSM ${osmCount}",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = if (grid.buildings.isEmpty()) MaterialTheme.colorScheme.error else Accent
                             )
                         }
                         TerrainGridPreview(grid, Modifier.width(112.dp).height(58.dp))
@@ -1048,6 +1089,9 @@ private fun MapScreen(
                     }
                 }
 
+                if (captureNotice.isNotBlank()) {
+                    Text(captureNotice, color = Accent, fontSize = 10.sp)
+                }
                 if (errorMessage.isNotBlank()) {
                     Text(errorMessage, color = MaterialTheme.colorScheme.error, fontSize = 10.sp)
                 }
@@ -1182,7 +1226,7 @@ private fun geocodePlace(query: String): GeoCoordinate {
         connectTimeout = 10000
         readTimeout = 15000
         setRequestProperty("Accept", "application/json")
-        setRequestProperty("User-Agent", "BlockWorld-Forge-Android/0.4.3 (https://github.com/fzdff114/BlockWorld-Forge)")
+        setRequestProperty("User-Agent", "BlockWorld-Forge-Android/0.4.4 (https://github.com/fzdff114/BlockWorld-Forge)")
     }
     try {
         val status = connection.responseCode
@@ -1287,7 +1331,7 @@ private fun downloadTerrariumTile(
         connectTimeout = 20000
         readTimeout = 30000
         setRequestProperty("Accept", "image/png")
-        setRequestProperty("User-Agent", "BlockWorld-Forge-Android/0.4.3 (terrain tile cache)")
+        setRequestProperty("User-Agent", "BlockWorld-Forge-Android/0.4.4 (terrain tile cache)")
     }
     try {
         val status = connection.responseCode
@@ -1375,7 +1419,7 @@ private fun fetchOsmBuildings(
                 readTimeout = 35000
                 setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
                 setRequestProperty("Accept", "application/json")
-                setRequestProperty("User-Agent", "BlockWorld-Forge-Android/0.4.3 (OpenStreetMap building import)")
+                setRequestProperty("User-Agent", "BlockWorld-Forge-Android/0.4.4 (OpenStreetMap building import)")
             }
             try {
                 val request = ("data=" + URLEncoder.encode(query, "UTF-8")).toByteArray(Charsets.UTF_8)

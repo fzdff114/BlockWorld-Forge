@@ -127,6 +127,95 @@ class BedrockWorldFormatTest {
     }
 
     @Test
+    fun renderedBasemapBuildingPolygonReadsVectorTileHeightFields() {
+        val feature = """
+            {
+              "type":"Feature",
+              "id":12345,
+              "properties":{
+                "building":"yes",
+                "render_height":42.5,
+                "render_min_height":3.0,
+                "name":"测试楼"
+              },
+              "geometry":{
+                "type":"Polygon",
+                "coordinates":[[
+                  [116.3990,39.8990],
+                  [116.4010,39.8990],
+                  [116.4010,39.9010],
+                  [116.3990,39.9010],
+                  [116.3990,39.8990]
+                ]]
+              }
+            }
+        """.trimIndent()
+        val bounds = listOf(
+            GeoCoordinate(39.902, 116.398),
+            GeoCoordinate(39.902, 116.402),
+            GeoCoordinate(39.898, 116.402),
+            GeoCoordinate(39.898, 116.398)
+        )
+        val buildings = RenderedMapBuildingReader.parseFeature(feature, bounds)
+        assertEquals(1, buildings.size)
+        assertEquals(42.5, buildings.single().heightMeters, 0.0001)
+        assertEquals(3.0, buildings.single().minHeightMeters, 0.0001)
+        assertEquals("测试楼", buildings.single().name)
+        assertTrue(buildings.single().source.startsWith("OpenFreeMap"))
+    }
+
+    @Test
+    fun renderedBasemapBuildingParserSupportsMultiPolygonAndLevelsFallback() {
+        val feature = """
+            {
+              "type":"Feature",
+              "properties":{"building":"yes","building:levels":"5"},
+              "geometry":{
+                "type":"MultiPolygon",
+                "coordinates":[
+                  [[[116.4000,39.9000],[116.4005,39.9000],[116.4005,39.9005],[116.4000,39.9005],[116.4000,39.9000]]],
+                  [[[116.4010,39.9000],[116.4015,39.9000],[116.4015,39.9005],[116.4010,39.9005],[116.4010,39.9000]]]
+                ]
+              }
+            }
+        """.trimIndent()
+        val bounds = listOf(
+            GeoCoordinate(39.902, 116.399),
+            GeoCoordinate(39.902, 116.403),
+            GeoCoordinate(39.899, 116.403),
+            GeoCoordinate(39.899, 116.399)
+        )
+        val buildings = RenderedMapBuildingReader.parseFeature(feature, bounds)
+        assertEquals(2, buildings.size)
+        assertEquals(16.0, buildings.first().heightMeters, 0.0001)
+    }
+
+    @Test
+    fun renderedBasemapBuildingParserRejectsNonBuildingPolygons() {
+        val feature = """
+            {
+              "type":"Feature",
+              "properties":{"class":"water","name":"pond"},
+              "geometry":{
+                "type":"Polygon",
+                "coordinates":[[
+                  [116.3990,39.8990],[116.4010,39.8990],
+                  [116.4010,39.9010],[116.3990,39.9010],
+                  [116.3990,39.8990]
+                ]]
+              }
+            }
+        """.trimIndent()
+        val bounds = listOf(
+            GeoCoordinate(39.902, 116.398),
+            GeoCoordinate(39.902, 116.402),
+            GeoCoordinate(39.898, 116.402),
+            GeoCoordinate(39.898, 116.398)
+        )
+        assertTrue(RenderedMapBuildingReader.parseFeature(feature, bounds).isEmpty())
+    }
+
+    @Test
     fun chineseBuildingImporterConvertsWebMercatorCoordinatesToWgs84() {
         val origin = ChinaBuildingDatasetImporter.toWgs84(0.0, 0.0, "EPSG:3857")
         assertEquals(0.0, origin.first, 0.000001)
