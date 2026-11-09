@@ -34,5 +34,7 @@ dependencies {
     implementation("com.hivemc.leveldb:leveldb-api:1.1.0")
     implementation("com.google.guava:guava:33.4.8-android")
     testImplementation("junit:junit:4.13.2")
+    // The Android SDK's org.json classes are stubs in local JVM tests.
+    testImplementation("org.json:json:20240303")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
