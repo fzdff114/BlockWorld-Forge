@@ -583,6 +583,7 @@ private fun MapScreen(
     val scope = rememberCoroutineScope()
     var coordinateQuery by rememberSaveable { mutableStateOf("39.9, 116.4") }
     var loading by remember { mutableStateOf(false) }
+    var captureStatus by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf("") }
     var show3d by rememberSaveable { mutableStateOf(false) }
     var selectionMode by rememberSaveable { mutableStateOf("矩形") }
@@ -821,15 +822,27 @@ private fun MapScreen(
                             errorMessage = ""
                             scope.launch {
                                 try {
-                                    val result = withContext(Dispatchers.IO) { fetchElevationGrid(snapshot) }
+                                    captureStatus = "准备下载高程瓦片…"
+                                    val result = withContext(Dispatchers.IO) {
+                                        fetchElevationGrid(snapshot) { phase, completed, total ->
+                                            scope.launch {
+                                                captureStatus = if (total > 1) {
+                                                    phase + " " + completed + "/" + total
+                                                } else {
+                                                    phase
+                                                }
+                                            }
+                                        }
+                                    }
                                     onElevationReady(result)
                                     if (result.buildingError != null) {
                                         errorMessage = "地形已采集；建筑数据未取得：" + result.buildingError
                                     }
-                                } catch (_: Exception) {
-                                    errorMessage = "高程数据获取失败，请检查网络后重试"
+                                } catch (error: Exception) {
+                                    errorMessage = "采集失败：" + (error.localizedMessage ?: "请检查网络后重试")
                                 } finally {
                                     loading = false
+                                    captureStatus = ""
                                 }
                             }
                         },
@@ -845,7 +858,12 @@ private fun MapScreen(
                             Icon(Icons.Outlined.Terrain, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(5.dp))
                         }
-                        Text(if (loading) "采集中" else "采集地形+建筑", fontSize = 12.sp)
+                        Text(
+                            if (loading) captureStatus.ifBlank { "采集中" } else "采集地形+建筑",
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                     Button(
                         onClick = onSaveRegion,
@@ -1046,7 +1064,8 @@ internal fun terrariumTilePixelIndex(pixel256: Int, tileDimension: Int): Int {
 }
 
 private fun chooseTerrariumZoom(west: Double, east: Double, south: Double, north: Double): Int {
-    for (zoom in 15 downTo 8) {
+    // Zoom 14 is enough for a ~30 m terrain grid; avoid downloading over-zoomed tiles.
+    for (zoom in 14 downTo 8) {
         val corners = listOf(
             terrariumTilePosition(west, north, zoom),
             terrariumTilePosition(east, north, zoom),
@@ -1095,10 +1114,10 @@ private fun parseOsmHeight(tags: JSONObject, key: String): Double? {
 }
 
 private fun fetchOsmBuildings(west: Double, east: Double, south: Double, north: Double): List<OsmBuilding> {
-    val query = "[out:json][timeout:60][maxsize:67108864];(" +
+    val query = "[out:json][timeout:25][maxsize:33554432];(" +
         "way[\"building\"]($south,$west,$north,$east);" +
         "relation[\"building\"]($south,$west,$north,$east);" +
-        ");out tags geom;"
+        ");out tags geom qt;
     val endpoints = listOf(
         "https://overpass-api.de/api/interpreter",
         "https://overpass.kumi.systems/api/interpreter"
@@ -1108,8 +1127,8 @@ private fun fetchOsmBuildings(west: Double, east: Double, south: Double, north: 
         val connection = (URL(endpointUrl).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             doOutput = true
-            connectTimeout = 20000
-            readTimeout = 90000
+            connectTimeout = 12000
+            readTimeout = 35000
             setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
             setRequestProperty("Accept", "application/json")
             setRequestProperty("User-Agent", "Atlas-Android/0.4.0 (OpenStreetMap building import)")
@@ -1178,7 +1197,10 @@ private fun fetchOsmBuildings(west: Double, east: Double, south: Double, north: 
     throw IOException(lastError?.localizedMessage ?: "OSM 建筑数据暂不可用")
 }
 
-private fun fetchElevationGrid(boundary: List<GeoCoordinate>): ElevationGrid {
+private fun fetchElevationGrid(
+    boundary: List<GeoCoordinate>,
+    onProgress: (String, Int, Int) -> Unit = { _, _, _ -> }
+): ElevationGrid {
     require(boundary.size >= 3) { "At least three boundary points are required" }
     val south = boundary.minOf { it.latitude }
     val north = boundary.maxOf { it.latitude }
@@ -1189,9 +1211,10 @@ private fun fetchElevationGrid(boundary: List<GeoCoordinate>): ElevationGrid {
     val widthMeters = haversineMeters(centerLatitude, west, centerLatitude, east)
     val depthMeters = haversineMeters(south, centerLongitude, north, centerLongitude)
 
-    // Sample a 20 m grid, capped at 512 × 512 to bound project size and RAM.
-    val columns = ceil(widthMeters / 20.0).toInt().coerceIn(2, 384)
-    val rows = ceil(depthMeters / 20.0).toInt().coerceIn(2, 512)
+    // Source data is mainly ~30 m SRTM away from higher-resolution regional datasets.
+    // A 30 m grid avoids spending time on oversampling the same native elevation cells.
+    val columns = ceil(widthMeters / 30.0).toInt().coerceIn(2, 320)
+    val rows = ceil(depthMeters / 30.0).toInt().coerceIn(2, 320)
     val resolutionMeters = max(widthMeters / columns, depthMeters / rows)
     val zoom = chooseTerrariumZoom(west, east, south, north)
     val matrix = MutableList(rows) { MutableList<Double?>(columns) { null } }
@@ -1211,12 +1234,21 @@ private fun fetchElevationGrid(boundary: List<GeoCoordinate>): ElevationGrid {
 
     val tileKeys = pixels.map { it.tileX to it.tileY }.distinct()
     if (tileKeys.size > 64) throw IOException("当前区域需要下载过多 DEM 瓦片，请缩小圈选范围")
-    val executor = Executors.newFixedThreadPool(4)
+    // Fetch OSM data in parallel with terrain tiles instead of waiting for two serial network phases.
+    val executor = Executors.newFixedThreadPool(8)
     try {
+        val buildingsFuture = executor.submit(Callable {
+            try {
+                fetchOsmBuildings(west, east, south, north) to null
+            } catch (error: Exception) {
+                emptyList<OsmBuilding>() to (error.localizedMessage ?: "建筑数据服务不可用")
+            }
+        })
         val samplesByTile = pixels.groupBy { it.tileX to it.tileY }
         val allValues = ArrayList<Double>(pixels.size)
-        // Keep at most four decoded PNG tiles alive at once on mobile devices.
-        for (tileBatch in tileKeys.chunked(4)) {
+        var completedTiles = 0
+        // Eight downloads overlap; each decoded bitmap is released immediately after sampling.
+        for (tileBatch in tileKeys.chunked(8)) {
             val futures = tileBatch.map { key ->
                 key to executor.submit(Callable { downloadTerrariumTile(key.first, key.second, zoom) })
             }
@@ -1241,14 +1273,14 @@ private fun fetchElevationGrid(boundary: List<GeoCoordinate>): ElevationGrid {
                 } finally {
                     bitmap.recycle()
                 }
+                completedTiles++
+                onProgress("下载高程瓦片", completedTiles, tileKeys.size)
             }
         }
         if (allValues.isEmpty()) throw IOException("DEM 瓦片没有返回有效高程数据")
-        val buildingsAndError = try {
-            fetchOsmBuildings(west, east, south, north) to null
-        } catch (error: Exception) {
-            emptyList<OsmBuilding>() to (error.localizedMessage ?: "建筑数据服务不可用")
-        }
+        onProgress("整理建筑轮廓", 0, 1)
+        val buildingsAndError = buildingsFuture.get()
+        onProgress("采集完成", 1, 1)
         return ElevationGrid(
             rows = rows,
             columns = columns,
