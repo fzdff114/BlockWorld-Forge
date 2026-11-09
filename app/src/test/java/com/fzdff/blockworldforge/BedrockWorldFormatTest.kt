@@ -49,6 +49,15 @@ class BedrockWorldFormatTest {
     }
 
     @Test
+    fun terrariumTilePixelIndexAccountsForBufferedAndHiResTiles() {
+        assertEquals(2, terrariumTilePixelIndex(0, 260))
+        assertEquals(257, terrariumTilePixelIndex(255, 260))
+        assertEquals(2, terrariumTilePixelIndex(0, 516))
+        assertEquals(512, terrariumTilePixelIndex(255, 516))
+        assertEquals(0, terrariumTilePixelIndex(0, 256))
+    }
+
+    @Test
     fun osmBuildingHeightConvertsMetersToWorldBlocks() {
         assertEquals(12, BedrockWorldExporter.buildingHeightBlocks(24.0, 2.0))
         assertEquals(2, BedrockWorldExporter.buildingHeightBlocks(1.0, 4.0))
