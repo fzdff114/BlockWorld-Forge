@@ -367,6 +367,11 @@ private fun AtlasApp(mapView: MapView, map: MapLibreMap?) {
                             elevationGrid = null
                         }
                     },
+                    onSetPoints = { points ->
+                        selectedPoints.clear()
+                        selectedPoints.addAll(points)
+                        elevationGrid = null
+                    },
                     onUndo = {
                         if (selectedPoints.isNotEmpty()) selectedPoints.removeAt(selectedPoints.lastIndex)
                         elevationGrid = null
@@ -568,6 +573,7 @@ private fun MapScreen(
     selectedPoints: List<GeoCoordinate>,
     elevationGrid: ElevationGrid?,
     onAddPoint: (GeoCoordinate) -> Unit,
+    onSetPoints: (List<GeoCoordinate>) -> Unit,
     onUndo: () -> Unit,
     onClear: () -> Unit,
     onElevationReady: (ElevationGrid) -> Unit,
@@ -579,14 +585,43 @@ private fun MapScreen(
     var loading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf("") }
     var show3d by rememberSaveable { mutableStateOf(false) }
+    var selectionMode by rememberSaveable { mutableStateOf("矩形") }
+    var rectangleFirstCorner by remember { mutableStateOf<GeoCoordinate?>(null) }
 
-    DisposableEffect(map) {
+    DisposableEffect(map, selectionMode, rectangleFirstCorner) {
         if (map == null) {
             onDispose { }
         } else {
             val listener = MapLibreMap.OnMapClickListener { location ->
-                if (selectedPoints.size < 50) {
-                    onAddPoint(GeoCoordinate(location.latitude, location.longitude))
+                val clicked = GeoCoordinate(location.latitude, location.longitude)
+                if (selectionMode == "矩形") {
+                    val first = rectangleFirstCorner
+                    if (first == null) {
+                        rectangleFirstCorner = clicked
+                        errorMessage = "已记录第一个角点，再点矩形对角位置"
+                    } else {
+                        val south = min(first.latitude, clicked.latitude)
+                        val north = max(first.latitude, clicked.latitude)
+                        val west = min(first.longitude, clicked.longitude)
+                        val east = max(first.longitude, clicked.longitude)
+                        if (haversineMeters(south, west, north, east) < 30.0) {
+                            errorMessage = "矩形范围太小，请选择更远的对角点"
+                        } else {
+                            onSetPoints(
+                                listOf(
+                                    GeoCoordinate(north, west),
+                                    GeoCoordinate(north, east),
+                                    GeoCoordinate(south, east),
+                                    GeoCoordinate(south, west)
+                                )
+                            )
+                            errorMessage = ""
+                            rectangleFirstCorner = null
+                        }
+                    }
+                } else if (selectedPoints.size < 50) {
+                    onAddPoint(clicked)
+                    errorMessage = ""
                 } else {
                     android.widget.Toast.makeText(context, "最多选择 50 个边界点", android.widget.Toast.LENGTH_SHORT).show()
                 }
@@ -597,7 +632,7 @@ private fun MapScreen(
         }
     }
 
-    LaunchedEffect(map, selectedPoints.size) {
+    LaunchedEffect(map, selectedPoints.toList()) {
         if (map != null) updateSelectionOverlay(map, selectedPoints)
     }
 
@@ -694,7 +729,12 @@ private fun MapScreen(
                 shape = RoundedCornerShape(8.dp)
             ) {
                 Text(
-                    "点击地图添加边界点",
+                    if (selectionMode == "矩形") {
+                        if (rectangleFirstCorner == null) "矩形模式：依次点击两个对角点"
+                        else "已选第一个角点：再点击对角位置"
+                    } else {
+                        "多边形模式：依次点击边界点"
+                    },
                     Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
                     fontSize = 10.sp,
                     color = Ink
@@ -714,14 +754,63 @@ private fun MapScreen(
                 verticalArrangement = Arrangement.spacedBy(7.dp)
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("边界点 ${selectedPoints.size}/50", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Ink)
+                    Text(
+                        if (selectionMode == "矩形") "矩形两点圈选" else "边界点 ${selectedPoints.size}/50",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Ink
+                    )
                     Spacer(Modifier.weight(1f))
-                    TextButton(onClick = onUndo, enabled = selectedPoints.isNotEmpty(), contentPadding = PaddingValues(horizontal = 8.dp)) {
+                    TextButton(
+                        onClick = {
+                            if (selectionMode == "矩形" && rectangleFirstCorner != null) {
+                                rectangleFirstCorner = null
+                                errorMessage = "已取消第一个角点"
+                            } else if (selectionMode == "多边形") {
+                                onUndo()
+                            } else {
+                                onClear()
+                            }
+                        },
+                        enabled = rectangleFirstCorner != null || selectedPoints.isNotEmpty(),
+                        contentPadding = PaddingValues(horizontal = 8.dp)
+                    ) {
                         Text("撤销", fontSize = 11.sp)
                     }
-                    TextButton(onClick = onClear, enabled = selectedPoints.isNotEmpty(), contentPadding = PaddingValues(horizontal = 8.dp)) {
+                    TextButton(
+                        onClick = {
+                            rectangleFirstCorner = null
+                            errorMessage = ""
+                            onClear()
+                        },
+                        enabled = selectedPoints.isNotEmpty() || rectangleFirstCorner != null,
+                        contentPadding = PaddingValues(horizontal = 8.dp)
+                    ) {
                         Text("清空", fontSize = 11.sp)
                     }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    FilterChip(
+                        selected = selectionMode == "矩形",
+                        onClick = {
+                            selectionMode = "矩形"
+                            rectangleFirstCorner = null
+                            errorMessage = ""
+                            onClear()
+                        },
+                        label = { Text("两点矩形", fontSize = 11.sp) }
+                    )
+                    FilterChip(
+                        selected = selectionMode == "多边形",
+                        onClick = {
+                            selectionMode = "多边形"
+                            rectangleFirstCorner = null
+                            errorMessage = ""
+                            onClear()
+                        },
+                        label = { Text("多边形", fontSize = 11.sp) }
+                    )
+                    Spacer(Modifier.weight(1f))
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
