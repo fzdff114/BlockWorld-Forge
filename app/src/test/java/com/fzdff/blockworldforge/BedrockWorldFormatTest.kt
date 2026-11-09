@@ -42,6 +42,28 @@ class BedrockWorldFormatTest {
     }
 
     @Test
+    fun terrariumElevationDecoderUsesMapzenEncoding() {
+        assertEquals(0.0, decodeTerrariumElevation(128, 0, 0), 0.0001)
+        assertEquals(128.5, decodeTerrariumElevation(128, 128, 128), 0.0001)
+        assertEquals(-32768.0, decodeTerrariumElevation(0, 0, 0), 0.0001)
+    }
+
+    @Test
+    fun osmBuildingHeightConvertsMetersToWorldBlocks() {
+        assertEquals(12, BedrockWorldExporter.buildingHeightBlocks(24.0, 2.0))
+        assertEquals(2, BedrockWorldExporter.buildingHeightBlocks(1.0, 4.0))
+        assertEquals(96, BedrockWorldExporter.buildingHeightBlocks(1000.0, 1.0))
+    }
+
+    @Test
+    fun buildingPaletteUsesBrickWallsAndStoneBrickRoofs() {
+        val wall = BedrockWorldExporter.encodePaletteEntry(7).toString(Charsets.ISO_8859_1)
+        val roof = BedrockWorldExporter.encodePaletteEntry(8).toString(Charsets.ISO_8859_1)
+        assertTrue(wall.contains("minecraft:bricks"))
+        assertTrue(roof.contains("minecraft:stone_bricks"))
+    }
+
+    @Test
     fun chunkKeyUsesLittleEndianCoordinatesAndSignedSubChunkY() {
         val key = BedrockWorldExporter.chunkKey(3, -2, 0x2F.toByte(), -4)
         assertEquals(10, key.size)
