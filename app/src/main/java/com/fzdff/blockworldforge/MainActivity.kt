@@ -581,7 +581,8 @@ private fun MapScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var coordinateQuery by rememberSaveable { mutableStateOf("39.9, 116.4") }
+    var coordinateQuery by rememberSaveable { mutableStateOf("深圳") }
+    var locating by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
     var captureStatus by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf("") }
@@ -653,29 +654,55 @@ private fun MapScreen(
                 modifier = Modifier.weight(1f),
                 singleLine = true,
                 textStyle = MaterialTheme.typography.bodyMedium,
-                placeholder = { Text("纬度, 经度", fontSize = 12.sp) },
+                placeholder = { Text("地点名称或 纬度, 经度", fontSize = 12.sp) },
                 shape = RoundedCornerShape(10.dp)
             )
             FilledTonalButton(
                 onClick = {
-                    val values = coordinateQuery.split(',', '，').mapNotNull { it.trim().toDoubleOrNull() }
-                    if (values.size == 2 && values[0] in -85.0..85.0 && values[1] in -180.0..180.0) {
-                        val camera = CameraPosition.Builder()
-                            .target(LatLng(values[0], values[1]))
-                            .zoom(16.0)
-                            .tilt(if (show3d) 55.0 else 0.0)
-                            .build()
-                        map?.animateCamera(CameraUpdateFactory.newCameraPosition(camera))
+                    val query = coordinateQuery.trim()
+                    if (query.isBlank()) {
+                        android.widget.Toast.makeText(context, "输入地点名称或坐标", android.widget.Toast.LENGTH_SHORT).show()
                     } else {
-                        android.widget.Toast.makeText(context, "坐标格式为：纬度, 经度", android.widget.Toast.LENGTH_SHORT).show()
+                        locating = true
+                        scope.launch {
+                            try {
+                                val target = withContext(Dispatchers.IO) {
+                                    val values = query.split(',', '，').mapNotNull { it.trim().toDoubleOrNull() }
+                                    if (values.size == 2 && values[0] in -85.0..85.0 && values[1] in -180.0..180.0) {
+                                        GeoCoordinate(values[0], values[1])
+                                    } else {
+                                        geocodePlace(query)
+                                    }
+                                }
+                                val camera = CameraPosition.Builder()
+                                    .target(LatLng(target.latitude, target.longitude))
+                                    .zoom(16.0)
+                                    .tilt(if (show3d) 55.0 else 0.0)
+                                    .build()
+                                map?.animateCamera(CameraUpdateFactory.newCameraPosition(camera))
+                            } catch (error: Exception) {
+                                android.widget.Toast.makeText(
+                                    context,
+                                    error.localizedMessage ?: "没有找到该地点",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                            } finally {
+                                locating = false
+                            }
+                        }
                     }
                 },
+                enabled = !locating,
                 contentPadding = PaddingValues(horizontal = 13.dp, vertical = 10.dp),
                 shape = RoundedCornerShape(10.dp)
             ) {
-                Icon(Icons.Outlined.MyLocation, contentDescription = null, modifier = Modifier.size(17.dp))
+                if (locating) {
+                    CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.Outlined.MyLocation, contentDescription = null, modifier = Modifier.size(17.dp))
+                }
                 Spacer(Modifier.width(4.dp))
-                Text("定位", fontSize = 12.sp)
+                Text(if (locating) "搜索中" else "定位", fontSize = 12.sp)
             }
             FilledTonalButton(
                 onClick = {
@@ -906,7 +933,7 @@ private fun MapScreen(
                     Text(errorMessage, color = MaterialTheme.colorScheme.error, fontSize = 10.sp)
                 }
                 Text(
-                    "OpenFreeMap © OpenMapTiles · OpenStreetMap contributors (ODbL) · DEM © Mapzen",
+                    "OpenFreeMap © OpenMapTiles · OpenStreetMap / Nominatim · DEM © Mapzen",
                     fontSize = 9.sp,
                     color = Muted
                 )
@@ -1026,6 +1053,34 @@ private fun isInsidePolygon(point: GeoCoordinate, polygon: List<GeoCoordinate>):
         j = i
     }
     return inside
+}
+
+private fun geocodePlace(query: String): GeoCoordinate {
+    val encoded = URLEncoder.encode(query, "UTF-8")
+    val endpoint = URL("https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=$encoded")
+    val connection = (endpoint.openConnection() as HttpURLConnection).apply {
+        requestMethod = "GET"
+        connectTimeout = 10000
+        readTimeout = 15000
+        setRequestProperty("Accept", "application/json")
+        setRequestProperty("User-Agent", "Atlas-Android/0.4.1 (https://github.com/fzdff114/BlockWorld-Forge)")
+    }
+    try {
+        val status = connection.responseCode
+        if (status !in 200..299) throw IOException("地点搜索失败 HTTP $status")
+        val results = JSONArray(connection.inputStream.bufferedReader().use { it.readText() })
+        val first = results.optJSONObject(0) ?: throw IOException("没有找到这个地点，请换一个名称")
+        val latitude = first.optString("lat").toDoubleOrNull()
+            ?: throw IOException("地点坐标无效")
+        val longitude = first.optString("lon").toDoubleOrNull()
+            ?: throw IOException("地点坐标无效")
+        if (latitude !in -85.0..85.0 || longitude !in -180.0..180.0) {
+            throw IOException("地点坐标超出地图范围")
+        }
+        return GeoCoordinate(latitude, longitude)
+    } finally {
+        connection.disconnect()
+    }
 }
 
 private data class TerrariumPixel(
