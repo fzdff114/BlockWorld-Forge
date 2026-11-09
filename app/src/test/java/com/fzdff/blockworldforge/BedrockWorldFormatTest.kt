@@ -6,6 +6,7 @@ import org.iq80.leveldb.impl.Iq80DBFactory
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 import java.util.UUID
@@ -16,6 +17,28 @@ class BedrockWorldFormatTest {
         val size = BedrockWorldExporter.scaledDimensions(1000.0, 500.0, 4)
         assertEquals(250, size.width)
         assertEquals(125, size.depth)
+    }
+
+    @Test
+    fun largeMapFromReportedScreenshotFitsChunkedExportBudget() {
+        val size = BedrockWorldExporter.GridSize(5044, 4759)
+        assertEquals(94_168L, BedrockWorldExporter.chunkCountForSize(size))
+        assertEquals(94_168L, BedrockWorldExporter.validateDimensions(size))
+    }
+
+    @Test
+    fun mapBeyondChunkBudgetIsRejectedBeforeDatabaseCreation() {
+        val error = runCatching {
+            BedrockWorldExporter.validateDimensions(BedrockWorldExporter.GridSize(8192, 8192))
+        }.exceptionOrNull()
+        assertNotNull(error)
+    }
+
+    @Test
+    fun terrainFoundationStartsNearLowestSurfaceInsteadOfAlwaysAtMinY() {
+        val floor = BedrockWorldExporter.terrainFloorY(500.0, 900.0, 1)
+        assertTrue(floor > -64)
+        assertTrue(floor < 300)
     }
 
     @Test
