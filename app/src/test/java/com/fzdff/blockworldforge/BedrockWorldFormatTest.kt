@@ -95,7 +95,7 @@ class BedrockWorldFormatTest {
         val marker = "NetworkVersion"
         val offset = text.indexOf(marker)
         assertEquals(true, offset >= 0)
-        val valueOffset = offset + marker.length + 3
+        val valueOffset = offset + marker.length
         assertEquals(2193, readIntLE(bytes, valueOffset))
     }
 
