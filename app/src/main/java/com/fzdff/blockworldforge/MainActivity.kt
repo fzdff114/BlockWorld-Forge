@@ -599,6 +599,7 @@ private fun MapScreen(
                     val first = rectangleFirstCorner
                     if (first == null) {
                         rectangleFirstCorner = clicked
+                        onSetPoints(listOf(clicked))
                         errorMessage = "已记录第一个角点，再点矩形对角位置"
                     } else {
                         val south = min(first.latitude, clicked.latitude)
@@ -1117,7 +1118,7 @@ private fun fetchOsmBuildings(west: Double, east: Double, south: Double, north: 
     val query = "[out:json][timeout:25][maxsize:33554432];(" +
         "way[\"building\"]($south,$west,$north,$east);" +
         "relation[\"building\"]($south,$west,$north,$east);" +
-        ");out tags geom qt;
+        ");out tags geom qt;"
     val endpoints = listOf(
         "https://overpass-api.de/api/interpreter",
         "https://overpass.kumi.systems/api/interpreter"
