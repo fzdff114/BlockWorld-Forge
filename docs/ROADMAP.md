@@ -1,41 +1,63 @@
-# BlockWorld Forge Roadmap
+# 方块世界工坊开发路线图
 
-## 0.1 Native Android foundation
-- [x] Kotlin + Jetpack Compose (no WebView or HTML UI)
-- [x] White-and-blue mobile interface
-- [x] Dashboard and in-memory project creation
-- [x] Android document picker entry point
-- [x] World size and terrain configuration UI
-- [x] Asset library and Bedrock export screens
-- [x] GitHub Actions debug APK build
+当前应用版本：**0.1.1（中文界面预览版）**
 
-## 0.2 Project model
-- [ ] Persist project metadata and settings locally
-- [ ] Rename, duplicate, archive and delete projects
-- [ ] Restore state after app restart
+## 0.1 原生安卓基础版
 
-## 0.3 Map data adapters
-- [ ] Region search and coordinate selection
-- [ ] OpenStreetMap import
-- [ ] Authorized map-provider adapter interface
-- [ ] Elevation and land-cover data adapters
-- [ ] Data-source attribution and licensing metadata
+- [x] Kotlin + Jetpack Compose 原生界面，不使用网页或 WebView
+- [x] 白底蓝色手机界面
+- [x] 简体中文页面、按钮、状态提示与应用名称
+- [x] 工作台示例项目列表
+- [x] 新建项目草稿与世界尺寸选择
+- [x] Android 系统文件选择器入口
+- [x] 地形风格、高程、水系、结构遗迹配置项
+- [x] 资源库与基岩版导出规划页面
+- [x] GitHub Actions 自动构建 Debug APK
+- [x] 中文 README、使用说明与开发路线图
 
-## 0.4 World generation core
-- [ ] Coordinate projection and region tiling
-- [ ] Heightfield conversion and terrain shaping
-- [ ] Rivers, lakes, coastlines and biome distribution
-- [ ] Structure and exploration-point placement
-- [ ] Chunk generation and incremental rebuilds
+## 0.2 项目管理与本地存储
 
-## 0.5 Bedrock exporter
-- [ ] Bedrock world database writer
-- [ ] World metadata and spawn configuration
-- [ ] Export validation and .mcworld packaging
-- [ ] Android Minecraft import smoke tests
+- [ ] 使用 Room 或等效本地数据库保存项目
+- [ ] 项目重命名、复制、归档和删除
+- [ ] 应用重启后恢复项目与配置
+- [ ] 项目异常退出后的恢复与数据校验
 
-## Engineering rules
-- Keep UI and generation engine separate.
-- Do not label planned functionality as complete.
-- Verify data-source licensing before provider integration.
-- Validate generated output before claiming export success.
+## 0.3 地图数据接入
+
+- [ ] 区域搜索、坐标输入和地图选区
+- [ ] 解析 OSM / PBF / GeoJSON 等地图数据
+- [ ] 地图服务供应商适配器接口
+- [ ] 高程与地表覆盖数据适配器
+- [ ] 河流、湖泊、海岸线等水系数据处理
+- [ ] 数据来源、授权范围和署名信息记录
+
+## 0.4 世界生成核心
+
+- [ ] 坐标投影、区域切片和比例尺转换
+- [ ] 高程数据转换为 Minecraft 地形
+- [ ] 地形平滑、山脉、平原、峡谷和海岸
+- [ ] 森林、草原、沙漠、雪原等群系分布
+- [ ] 河流、湖泊、海洋及地表水系生成
+- [ ] 村庄、遗迹、地牢和探索点位布置
+- [ ] 区块增量生成、任务进度和中断恢复
+
+## 0.5 基岩版世界导出
+
+- [ ] 世界元数据与出生点配置
+- [ ] Bedrock LevelDB 世界数据库写入
+- [ ] 区块、方块、群系与结构数据写入
+- [ ] 资源与行为包依赖检查（需要时）
+- [ ] .mcworld 打包与文件结构校验
+- [ ] Android 版 Minecraft 实机导入测试
+
+## 当前版本边界
+
+0.1.1 只完成原生界面、演示项目状态、配置交互和文件选择入口。地图解析、地图服务接入、真实地形生成、数据持久化和 .mcworld 导出均未完成。路线图中的未勾选项目不得对外描述为已实现。
+
+## 工程要求
+
+- 界面层与生成引擎分离，避免地图任务阻塞 UI。
+- 所有耗时任务使用可取消的后台执行与明确进度状态。
+- 地图服务按授权与许可范围接入，不绕过访问控制。
+- 生成前校验输入数据；导出后校验数据库、清单和压缩包。
+- 每次版本更新都执行构建检查；核心功能需增加测试。
