@@ -258,8 +258,6 @@ private fun ProjectsScreen(
                         modifier = Modifier.size(30.dp)
                     )
                     Text("暂无项目", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Ink)
-                    Text("新建一个项目开始编辑", fontSize = 11.sp, color = Muted)
-                    TextButton(onClick = onCreate) { Text("新建项目") }
                 }
             }
         } else {
@@ -360,7 +358,6 @@ private fun MapScreen(selectedFile: String, onPickFile: () -> Unit) {
                 }
             }
         }
-        Text("地图文件解析尚未接入", fontSize = 11.sp, color = Muted)
     }
 }
 
@@ -432,7 +429,6 @@ private fun TerrainScreen(
             SwitchRow("结构与遗迹", useStructures, onUseStructures)
         }
 
-        Text("地形生成引擎尚未接入", fontSize = 11.sp, color = Muted)
     }
 }
 
@@ -477,6 +473,7 @@ private fun AssetsScreen() {
         AssetRow(Icons.Outlined.Forest, "群系")
         AssetRow(Icons.Outlined.AccountTree, "结构与遗迹")
         AssetRow(Icons.Outlined.Layers, "地表规则")
+        Text("素材编辑暂未开放", fontSize = 11.sp, color = Muted)
     }
 }
 
@@ -495,7 +492,6 @@ private fun AssetRow(icon: ImageVector, title: String) {
         ) {
             Icon(icon, contentDescription = null, tint = Accent, modifier = Modifier.size(20.dp))
             Text(title, modifier = Modifier.weight(1f), fontSize = 13.sp, color = Ink)
-            Text("开发中", fontSize = 10.sp, color = Muted)
         }
     }
 }
