@@ -292,7 +292,7 @@ private fun AtlasApp(mapView: MapView, map: MapLibreMap?) {
                     }
                     exportProgress = 1f
                     exportStatus = "已导出：" + report.widthBlocks + " × " + report.depthBlocks +
-                        " 格 · " + report.chunkCount + " 个区块"
+                        " 格 · " + report.chunkCount + " 个区块 · " + report.buildingCount + " 栋建筑"
                 } catch (error: Exception) {
                     exportStatus = "导出失败：" + (error.localizedMessage ?: "未知错误")
                 } finally {
