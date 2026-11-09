@@ -40,7 +40,7 @@ Android 原生地图与 Minecraft 基岩版世界制作工具。
 
 ## 安装
 
-在 GitHub Releases 下载最新 Atlas 测试版 APK。最低 Android 7.0（API 24），不依赖 Google Play 服务。
+在 GitHub Releases 下载最新 Atlas 测试版 APK。最低 Android 8.0（API 26），不依赖 Google Play 服务。
 
 ## 本地构建
 
