@@ -4,6 +4,11 @@ Android 原生地图与 Minecraft 基岩版世界制作工具。
 
 **当前版本：0.1.2**
 
+## 下载
+
+- [Atlas 0.1.2 正式发布页](../../releases/tag/v0.1.2)
+- [版本更新记录](docs/RELEASE_NOTES_0.1.2.md)
+
 ## 当前功能
 
 - 原生 Android 界面（Kotlin + Jetpack Compose）
@@ -19,9 +24,7 @@ Android 原生地图与 Minecraft 基岩版世界制作工具。
 
 ## 安装
 
-在 [Actions](../../actions) 中打开最新的 **Android APK** 构建，下载 `Atlas-Android-debug`，解压后安装 `app-debug.apk`。
-
-Debug 测试包，最低支持 Android 7.0（API 24），不依赖 Google Play 服务。
+从发布页下载 `Atlas-0.1.2.apk`，在 Android 手机上安装。Debug 测试包，最低支持 Android 7.0（API 24），不依赖 Google Play 服务。
 
 ## 本地构建
 
