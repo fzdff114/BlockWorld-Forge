@@ -39,6 +39,7 @@ internal data class BedrockExportReport(
     val metersPerBlock: Int,
     val minimumElevation: Double,
     val maximumElevation: Double,
+    val verticalMetersPerBlock: Double,
     val buildingCount: Int
 )
 
@@ -76,7 +77,8 @@ internal object BedrockWorldExporter {
     private data class BuildingFootprint(
         val polygon: List<Point>,
         val heightMeters: Double,
-        val minHeightMeters: Double
+        val minHeightMeters: Double,
+        val source: String
     )
     private data class IndexedBuilding(
         val polygon: List<BlockPoint>,
@@ -110,7 +112,7 @@ internal object BedrockWorldExporter {
         worldName: String,
         regionJson: String,
         metersPerBlock: Int,
-        verticalExaggeration: Double = 2.0,
+        verticalExaggeration: Double = 1.0,
         outputUri: Uri,
         onProgress: (Int, Int) -> Unit = { _, _ -> }
     ): BedrockExportReport {
@@ -137,9 +139,22 @@ internal object BedrockWorldExporter {
             )
 
             File(worldFolder, "levelname.txt").writeText(worldName.take(64), Charsets.UTF_8)
+            val buildingSources = input.buildings.map { it.source }.distinct()
+            val buildingAttribution = buildString {
+                if (buildingSources.any { it.contains("3D-GloBFP") }) {
+                    append("Building footprints and estimated heights: 3D-GloBFP, Che et al. (2025), DOI 10.5281/zenodo.15459025; CC BY 4.0.\n")
+                    append("Attribution: Che, Y. et al. 3D-GloBFP: the first global three-dimensional building footprint dataset.\n")
+                }
+                if (buildingSources.any { it.contains("China Urban Building Footprint Height Dataset") }) {
+                    append("Building footprints and estimated heights: China Urban Building Footprint Height Dataset (2018), National Earth System Science Data Center; reuse subject to the source portal's data terms.\\n")
+                }
+                if (buildingSources.any { it.contains("OpenStreetMap") }) {
+                    append("OpenStreetMap contributors, ODbL 1.0.\n")
+                }
+            }
             File(worldFolder, "atlas_attribution.txt").writeText(
                 "Terrain elevation: Mapzen Terrain Tiles, AWS Open Data; source data includes SRTM and other open datasets.\n" +
-                    "Building footprints: © OpenStreetMap contributors, licensed under ODbL.\n" +
+                    buildingAttribution +
                     "Map style: OpenFreeMap © OpenMapTiles; data © OpenStreetMap contributors.\n",
                 Charsets.UTF_8
             )
@@ -168,6 +183,9 @@ internal object BedrockWorldExporter {
                 metersPerBlock = metersPerBlock,
                 minimumElevation = input.minimum,
                 maximumElevation = input.maximum,
+                verticalMetersPerBlock = verticalMetersPerBlock(
+                    metersPerBlock, input.minimum, input.maximum, verticalExaggeration
+                ),
                 buildingCount = input.buildings.size
             )
         } finally {
@@ -212,9 +230,14 @@ internal object BedrockWorldExporter {
         return chunkCount
     }
 
-    internal fun surfaceYForElevation(elevationMeters: Double, verticalMetersPerBlock: Double): Int {
+    internal fun surfaceYForElevation(
+        elevationMeters: Double,
+        minimumElevationMeters: Double,
+        verticalMetersPerBlock: Double
+    ): Int {
+        require(elevationMeters.isFinite() && minimumElevationMeters.isFinite())
         require(verticalMetersPerBlock > 0.0)
-        return (SEA_LEVEL + (elevationMeters / verticalMetersPerBlock).roundToInt())
+        return (SEA_LEVEL + ((elevationMeters - minimumElevationMeters) / verticalMetersPerBlock).roundToInt())
             .coerceIn(MIN_Y + 4, MAX_Y - 5)
     }
 
@@ -227,10 +250,13 @@ internal object BedrockWorldExporter {
         require(metersPerBlock > 0)
         require(minimumElevation.isFinite() && maximumElevation.isFinite())
         require(verticalExaggeration in 1.0..3.0)
-        val highestAbsoluteElevation = max(kotlin.math.abs(minimumElevation), kotlin.math.abs(maximumElevation))
-        // Preserve headroom for high mountains while allowing a selectable vertical
-        // exaggeration to make low-relief terrain visible in Minecraft.
-        return max(metersPerBlock.toDouble() / verticalExaggeration, highestAbsoluteElevation / 280.0)
+        require(maximumElevation >= minimumElevation) { "高程上下限顺序不正确" }
+        val localReliefMeters = maximumElevation - minimumElevation
+        // The local minimum is anchored at Y=8. Use the real local height range,
+        // not absolute altitude above sea level: a plateau at 1,800 m with only
+        // 60 m of relief must not be flattened merely because it is high above sea level.
+        // Compress only when the region's own relief would exceed Bedrock build height.
+        return max(metersPerBlock.toDouble() / verticalExaggeration, localReliefMeters / 280.0)
     }
 
     internal fun terrainFloorY(
@@ -239,17 +265,9 @@ internal object BedrockWorldExporter {
         metersPerBlock: Int,
         verticalExaggeration: Double = 1.0
     ): Int {
-        val verticalScale = verticalMetersPerBlock(
-            metersPerBlock,
-            minimumElevation,
-            maximumElevation,
-            verticalExaggeration
-        )
-        val minimumSurfaceY = (SEA_LEVEL + (minimumElevation / verticalScale).roundToInt())
-            .coerceIn(MIN_Y + 4, MAX_Y - 5)
-        // Keep a four-block foundation below the lowest point instead of filling
-        // every column all the way down to Y=-64.
-        return max(MIN_Y, minimumSurfaceY - 4)
+        // The selected region's lowest point is the local datum at sea-level Y=8.
+        // The actual 0 m sea plane is calculated independently during voxel generation.
+        return SEA_LEVEL - 4
     }
 
     internal fun chunkKey(
@@ -379,7 +397,8 @@ internal object BedrockWorldExporter {
                     BuildingFootprint(
                         polygon = points,
                         heightMeters = item.optDouble("heightMeters", 8.0).coerceAtLeast(3.0),
-                        minHeightMeters = item.optDouble("minHeightMeters", 0.0).coerceAtLeast(0.0)
+                        minHeightMeters = item.optDouble("minHeightMeters", 0.0).coerceAtLeast(0.0),
+                        source = item.optString("source", "OpenStreetMap").ifBlank { "OpenStreetMap" }
                     )
                 )
                 if (buildings.size >= 20000) break
@@ -438,6 +457,9 @@ internal object BedrockWorldExporter {
             verticalExaggeration
         )
         val worldFloorY = terrainFloorY(input.minimum, input.maximum, metersPerBlock, verticalExaggeration)
+        val seaLevelY = (
+            SEA_LEVEL + ((0.0 - input.minimum) / verticalScale).roundToInt()
+        ).coerceIn(MIN_Y + 1, MAX_Y - 1)
         val indexedBuildings = indexBuildings(input, size, verticalScale)
         val sink = DatabaseBatchSink(db)
 
@@ -475,7 +497,7 @@ internal object BedrockWorldExporter {
                                     val point = coordinateAt(input, size, worldX, worldZ)
                                     if (!insidePolygon(point, input.polygon)) continue
                                     val elevation = sampleElevation(input, point)
-                                    val surfaceY = surfaceYForElevation(elevation, verticalScale)
+                                    val surfaceY = surfaceYForElevation(elevation, input.minimum, verticalScale)
 
                                     setBlock(sections, localX, worldFloorY, localZ, BEDROCK)
                                     for (y in worldFloorY + 1 until surfaceY - 3) {
@@ -488,11 +510,11 @@ internal object BedrockWorldExporter {
                                     val columnIndex = localZ * 16 + localX
                                     surfaceYMap[columnIndex] = surfaceY
                                     hasSurface[columnIndex] = true
-                                    if (surfaceY < SEA_LEVEL) {
-                                        for (y in surfaceY + 1..SEA_LEVEL) {
+                                    if (elevation < 0.0 && seaLevelY > surfaceY) {
+                                        for (y in surfaceY + 1..seaLevelY) {
                                             setBlock(sections, localX, y, localZ, WATER)
                                         }
-                                        heightMap[columnIndex] = SEA_LEVEL + 1
+                                        heightMap[columnIndex] = seaLevelY + 1
                                     } else {
                                         heightMap[columnIndex] = surfaceY + 1
                                     }
@@ -865,7 +887,7 @@ internal object BedrockWorldExporter {
             input.maximum,
             verticalExaggeration
         )
-        return (SEA_LEVEL + (elevation / verticalScale).roundToInt() + 1)
+        return (SEA_LEVEL + ((elevation - input.minimum) / verticalScale).roundToInt() + 1)
             .coerceIn(MIN_Y + 4, MAX_Y - 4)
     }
 

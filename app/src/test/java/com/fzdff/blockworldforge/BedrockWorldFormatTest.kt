@@ -40,10 +40,10 @@ class BedrockWorldFormatTest {
         val doubledScale = BedrockWorldExporter.verticalMetersPerBlock(4, 100.0, 120.0, 2.0)
         assertEquals(4.0, naturalScale, 0.0001)
         assertEquals(2.0, doubledScale, 0.0001)
-        val naturalRelief = BedrockWorldExporter.surfaceYForElevation(120.0, naturalScale) -
-            BedrockWorldExporter.surfaceYForElevation(100.0, naturalScale)
-        val doubledRelief = BedrockWorldExporter.surfaceYForElevation(120.0, doubledScale) -
-            BedrockWorldExporter.surfaceYForElevation(100.0, doubledScale)
+        val naturalRelief = BedrockWorldExporter.surfaceYForElevation(120.0, 100.0, naturalScale) -
+            BedrockWorldExporter.surfaceYForElevation(100.0, 100.0, naturalScale)
+        val doubledRelief = BedrockWorldExporter.surfaceYForElevation(120.0, 100.0, doubledScale) -
+            BedrockWorldExporter.surfaceYForElevation(100.0, 100.0, doubledScale)
         assertTrue(doubledRelief > naturalRelief)
         assertEquals(10, doubledRelief)
     }
@@ -60,10 +60,23 @@ class BedrockWorldFormatTest {
     }
 
     @Test
-    fun terrainFoundationStartsNearLowestSurfaceInsteadOfAlwaysAtMinY() {
-        val floor = BedrockWorldExporter.terrainFloorY(500.0, 900.0, 1)
-        assertTrue(floor > -64)
-        assertTrue(floor < 300)
+    fun highAltitudePlateauKeepsItsLocalReliefAtTheSelectedHorizontalScale() {
+        val lowlandScale = BedrockWorldExporter.verticalMetersPerBlock(4, 20.0, 80.0, 1.0)
+        val plateauScale = BedrockWorldExporter.verticalMetersPerBlock(4, 1520.0, 1580.0, 1.0)
+        assertEquals(4.0, lowlandScale, 0.0001)
+        assertEquals(4.0, plateauScale, 0.0001)
+        val lowlandRelief = BedrockWorldExporter.surfaceYForElevation(80.0, 20.0, lowlandScale) -
+            BedrockWorldExporter.surfaceYForElevation(20.0, 20.0, lowlandScale)
+        val plateauRelief = BedrockWorldExporter.surfaceYForElevation(1580.0, 1520.0, plateauScale) -
+            BedrockWorldExporter.surfaceYForElevation(1520.0, 1520.0, plateauScale)
+        assertEquals(lowlandRelief, plateauRelief)
+        assertEquals(15, plateauRelief)
+    }
+
+    @Test
+    fun terrainFoundationUsesLocalDatumInsteadOfAbsoluteSeaLevelAltitude() {
+        assertEquals(4, BedrockWorldExporter.terrainFloorY(500.0, 900.0, 1))
+        assertEquals(4, BedrockWorldExporter.terrainFloorY(2500.0, 2520.0, 1))
     }
 
     @Test
@@ -81,8 +94,8 @@ class BedrockWorldFormatTest {
 
     @Test
     fun worldSurfaceHeightChangesWithRealElevationSamples() {
-        val low = BedrockWorldExporter.surfaceYForElevation(20.0, 2.0)
-        val high = BedrockWorldExporter.surfaceYForElevation(120.0, 2.0)
+        val low = BedrockWorldExporter.surfaceYForElevation(20.0, 20.0, 2.0)
+        val high = BedrockWorldExporter.surfaceYForElevation(120.0, 20.0, 2.0)
         assertTrue(high > low)
         assertEquals(50, high - low)
     }
@@ -111,6 +124,26 @@ class BedrockWorldFormatTest {
         assertEquals(2, terrariumTilePixelIndex(0, 516))
         assertEquals(512, terrariumTilePixelIndex(255, 516))
         assertEquals(0, terrariumTilePixelIndex(0, 256))
+    }
+
+    @Test
+    fun chineseBuildingImporterConvertsWebMercatorCoordinatesToWgs84() {
+        val origin = ChinaBuildingDatasetImporter.toWgs84(0.0, 0.0, "EPSG:3857")
+        assertEquals(0.0, origin.first, 0.000001)
+        assertEquals(0.0, origin.second, 0.000001)
+        val beijing = ChinaBuildingDatasetImporter.toWgs84(12_995_000.0, 4_823_000.0, "EPSG:3857")
+        assertTrue(beijing.first in 116.0..117.0)
+        assertTrue(beijing.second in 39.0..40.0)
+    }
+
+    @Test
+    fun chineseBuildingImporterAcceptsGeographicAndCleansHeightValues() {
+        val point = ChinaBuildingDatasetImporter.toWgs84(116.4, 39.9, "EPSG:4326")
+        assertEquals(116.4, point.first, 0.000001)
+        assertEquals(39.9, point.second, 0.000001)
+        assertEquals(18.5, ChinaBuildingDatasetImporter.parseHeightMeters("18.5 m")!!, 0.0001)
+        assertEquals(null, ChinaBuildingDatasetImporter.parseHeightMeters("unknown"))
+        assertEquals(null, ChinaBuildingDatasetImporter.parseHeightMeters("0"))
     }
 
     @Test

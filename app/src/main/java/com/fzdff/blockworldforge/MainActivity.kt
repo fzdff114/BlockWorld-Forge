@@ -1,6 +1,8 @@
 package com.fzdff.blockworldforge
 
 import android.os.Bundle
+import android.content.Intent
+import android.net.Uri
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color as AndroidColor
@@ -101,7 +103,8 @@ private data class OsmBuilding(
     val polygon: List<GeoCoordinate>,
     val heightMeters: Double,
     val minHeightMeters: Double,
-    val name: String?
+    val name: String?,
+    val source: String = "OpenStreetMap"
 )
 
 private data class ElevationGrid(
@@ -138,7 +141,7 @@ private data class WorldProject(
     val elevationSummary: String? = null,
     val regionDataJson: String? = null,
     val metersPerBlock: Int = 4,
-    val verticalExaggeration: Double = 2.0
+    val verticalExaggeration: Double = 1.0
 )
 
 class MainActivity : ComponentActivity() {
@@ -260,12 +263,73 @@ private fun AtlasApp(mapView: MapView, map: MapLibreMap?) {
     }
 
     val selectedPoints = remember { mutableStateListOf<GeoCoordinate>() }
+    val importedChinaBuildings = remember { mutableStateListOf<OsmBuilding>() }
+    var buildingImportStatus by remember { mutableStateOf("先在地图页圈选区域，再导入该省/市的建筑 Shapefile ZIP") }
+    var buildingImportBusy by remember { mutableStateOf(false) }
+    var selectedBuildingDataset by rememberSaveable { mutableStateOf("3D-GloBFP") }
     var elevationGrid by remember { mutableStateOf<ElevationGrid?>(null) }
     var pendingRegion by remember { mutableStateOf<RegionDraft?>(null) }
     var pendingExportProject by remember { mutableStateOf<WorldProject?>(null) }
     var exportBusy by remember { mutableStateOf(false) }
     var exportProgress by remember { mutableFloatStateOf(0f) }
     var exportStatus by remember { mutableStateOf("") }
+
+    val buildingDatasetLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            val points = selectedPoints.toList()
+            if (points.size < 3) {
+                buildingImportStatus = "请先到地图页圈选目标区域，再返回素材页导入建筑包"
+            } else {
+                buildingImportBusy = true
+                buildingImportStatus = "正在读取中国建筑数据…"
+                val west = points.minOf { it.longitude }
+                val east = points.maxOf { it.longitude }
+                val south = points.minOf { it.latitude }
+                val north = points.maxOf { it.latitude }
+                scope.launch {
+                    try {
+                        val result = withContext(Dispatchers.IO) {
+                            ChinaBuildingDatasetImporter.importZip(
+                                context, uri, west, east, south, north,
+                                sourceLabel = selectedBuildingDataset
+                            ) { phase ->
+                                scope.launch { buildingImportStatus = phase }
+                            }
+                        }
+                        importedChinaBuildings.clear()
+                        importedChinaBuildings.addAll(
+                            result.buildings.map { feature ->
+                                OsmBuilding(
+                                    polygon = feature.coordinates.map { (longitude, latitude) ->
+                                        GeoCoordinate(latitude, longitude)
+                                    },
+                                    heightMeters = feature.heightMeters,
+                                    minHeightMeters = 0.0,
+                                    name = feature.name,
+                                    source = feature.source
+                                )
+                            }
+                        )
+                        elevationGrid = elevationGrid?.let { current ->
+                            val merged = mergeBuildingSources(importedChinaBuildings, current.buildings)
+                            current.copy(
+                                buildings = merged,
+                                buildingError = if (merged.isEmpty()) current.buildingError else null
+                            )
+                        }
+                        buildingImportStatus = "导入完成：${result.buildings.size} 栋带高度建筑，读取 ${result.sourceFiles} 个图层；无高度记录 ${result.missingHeight} 条" +
+                            if (result.truncated) "（已到 20,000 栋上限，请缩小选区分批导入）" else ""
+                    } catch (error: Exception) {
+                        buildingImportStatus = "导入失败：" + (error.localizedMessage ?: "请检查 ZIP / 坐标系 / height 字段")
+                    } finally {
+                        buildingImportBusy = false
+                    }
+                }
+            }
+        }
+    }
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/zip")
@@ -295,7 +359,8 @@ private fun AtlasApp(mapView: MapView, map: MapLibreMap?) {
                     }
                     exportProgress = 1f
                     exportStatus = "已导出：" + report.widthBlocks + " × " + report.depthBlocks +
-                        " 格 · " + report.chunkCount + " 个区块 · " + report.buildingCount + " 栋建筑"
+                        " 格 · " + report.chunkCount + " 个区块 · " + report.buildingCount + " 栋建筑" +
+                        " · 垂直比例约 1:" + String.format(Locale.US, "%.2f", report.verticalMetersPerBlock) + " m/块"
                 } catch (error: Exception) {
                     exportStatus = "导出失败：" + (error.localizedMessage ?: "未知错误")
                 } finally {
@@ -385,6 +450,7 @@ private fun AtlasApp(mapView: MapView, map: MapLibreMap?) {
                         selectedPoints.clear()
                         elevationGrid = null
                     },
+                    importedBuildings = importedChinaBuildings,
                     onElevationReady = { elevationGrid = it },
                     onSaveRegion = {
                         if (selectedPoints.size >= 3) {
@@ -411,7 +477,25 @@ private fun AtlasApp(mapView: MapView, map: MapLibreMap?) {
                     useStructures = useStructures,
                     onUseStructures = { useStructures = it }
                 )
-                "assets" -> AssetsScreen()
+                "assets" -> AssetsScreen(
+                    importedCount = importedChinaBuildings.size,
+                    importStatus = buildingImportStatus,
+                    selectedDataset = selectedBuildingDataset,
+                    onSelectedDataset = { selectedBuildingDataset = it },
+                    importing = buildingImportBusy,
+                    onImportChinaBuildings = {
+                        buildingDatasetLauncher.launch(
+                            arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream", "*/*")
+                        )
+                    },
+                    onClearImported = {
+                        importedChinaBuildings.clear()
+                        elevationGrid = elevationGrid?.let { current ->
+                            current.copy(buildings = current.buildings.filterNot { it.source.contains("3D-GloBFP") })
+                        }
+                        buildingImportStatus = "已清除本次导入的中国建筑数据"
+                    }
+                )
                 "export" -> ExportScreen(
                     projects = projects,
                     exporting = exportBusy,
@@ -579,6 +663,7 @@ private fun MapScreen(
     map: MapLibreMap?,
     selectedPoints: List<GeoCoordinate>,
     elevationGrid: ElevationGrid?,
+    importedBuildings: List<OsmBuilding>,
     onAddPoint: (GeoCoordinate) -> Unit,
     onSetPoints: (List<GeoCoordinate>) -> Unit,
     onUndo: () -> Unit,
@@ -889,9 +974,16 @@ private fun MapScreen(
                                             }
                                         }
                                     }
-                                    onElevationReady(result)
-                                    if (result.buildingError != null) {
-                                        errorMessage = "地形已采集；建筑数据未取得：" + result.buildingError
+                                    val mergedBuildings = mergeBuildingSources(importedBuildings, result.buildings)
+                                    val combined = result.copy(
+                                        buildings = mergedBuildings,
+                                        buildingError = if (mergedBuildings.isEmpty()) result.buildingError else null
+                                    )
+                                    onElevationReady(combined)
+                                    if (combined.buildingError != null) {
+                                        errorMessage = "地形已采集；建筑数据未取得：" + combined.buildingError
+                                    } else if (importedBuildings.isNotEmpty()) {
+                                        errorMessage = "地形及中国逐栋建筑数据已采集：${importedBuildings.size} 栋导入建筑"
                                     }
                                 } catch (error: Exception) {
                                     errorMessage = "采集失败：" + (error.localizedMessage ?: "请检查网络后重试")
@@ -1090,7 +1182,7 @@ private fun geocodePlace(query: String): GeoCoordinate {
         connectTimeout = 10000
         readTimeout = 15000
         setRequestProperty("Accept", "application/json")
-        setRequestProperty("User-Agent", "BlockWorld-Forge-Android/0.4.2 (https://github.com/fzdff114/BlockWorld-Forge)")
+        setRequestProperty("User-Agent", "BlockWorld-Forge-Android/0.4.3 (https://github.com/fzdff114/BlockWorld-Forge)")
     }
     try {
         val status = connection.responseCode
@@ -1195,7 +1287,7 @@ private fun downloadTerrariumTile(
         connectTimeout = 20000
         readTimeout = 30000
         setRequestProperty("Accept", "image/png")
-        setRequestProperty("User-Agent", "BlockWorld-Forge-Android/0.4.2 (terrain tile cache)")
+        setRequestProperty("User-Agent", "BlockWorld-Forge-Android/0.4.3 (terrain tile cache)")
     }
     try {
         val status = connection.responseCode
@@ -1283,7 +1375,7 @@ private fun fetchOsmBuildings(
                 readTimeout = 35000
                 setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
                 setRequestProperty("Accept", "application/json")
-                setRequestProperty("User-Agent", "BlockWorld-Forge-Android/0.4.2 (OpenStreetMap building import)")
+                setRequestProperty("User-Agent", "BlockWorld-Forge-Android/0.4.3 (OpenStreetMap building import)")
             }
             try {
                 val request = ("data=" + URLEncoder.encode(query, "UTF-8")).toByteArray(Charsets.UTF_8)
@@ -1490,7 +1582,7 @@ private fun loadProjects(context: android.content.Context): List<WorldProject> {
                 elevationSummary = item.optString("elevationSummary").takeIf { it.isNotBlank() && it != "null" },
                 regionDataJson = item.optString("regionDataJson").takeIf { it.isNotBlank() && it != "null" },
                 metersPerBlock = item.optInt("metersPerBlock", 4).let { if (it in listOf(1, 2, 4, 8, 16)) it else 4 },
-                verticalExaggeration = item.optDouble("verticalExaggeration", 2.0).coerceIn(1.0, 3.0)
+                verticalExaggeration = item.optDouble("verticalExaggeration", 1.0).coerceIn(1.0, 3.0)
             )
         }
     } catch (_: Exception) {
@@ -1517,6 +1609,29 @@ private fun saveProjects(context: android.content.Context, projects: List<WorldP
         .apply()
 }
 
+private fun mergeBuildingSources(
+    preferred: List<OsmBuilding>,
+    fallback: List<OsmBuilding>
+): List<OsmBuilding> {
+    val output = ArrayList<OsmBuilding>()
+    val centroids = HashSet<String>()
+    fun key(building: OsmBuilding): String {
+        val longitude = building.polygon.map { it.longitude }.average()
+        val latitude = building.polygon.map { it.latitude }.average()
+        return String.format(Locale.US, "%.5f,%.5f", longitude, latitude)
+    }
+    for (building in preferred) {
+        if (building.polygon.size >= 3 && output.size < 20_000 && centroids.add(key(building))) {
+            output.add(building)
+        }
+    }
+    for (building in fallback) {
+        if (output.size >= 20_000) break
+        if (building.polygon.size >= 3 && centroids.add(key(building))) output.add(building)
+    }
+    return output
+}
+
 private fun regionDraftJson(region: RegionDraft): String {
     val root = JSONObject()
     root.put("format", "atlas-region-heightmap-v1")
@@ -1524,7 +1639,10 @@ private fun regionDraftJson(region: RegionDraft): String {
     region.elevation?.let { grid ->
         root.put("elevationResolutionMeters", grid.resolutionMeters)
         root.put("elevationZoom", grid.demZoom)
-        root.put("buildingSource", "OpenStreetMap / Overpass API")
+        root.put(
+            "buildingSource",
+            grid.buildings.map { it.source }.distinct().joinToString(" + ").ifBlank { "OpenStreetMap" }
+        )
         val buildings = JSONArray()
         grid.buildings.forEach { building ->
             val item = JSONObject()
@@ -1536,6 +1654,7 @@ private fun regionDraftJson(region: RegionDraft): String {
             item.put("heightMeters", building.heightMeters)
             item.put("minHeightMeters", building.minHeightMeters)
             item.put("name", building.name ?: JSONObject.NULL)
+            item.put("source", building.source)
             buildings.put(item)
         }
         root.put("osmBuildings", buildings)
@@ -1668,18 +1787,104 @@ private fun SwitchRow(
 }
 
 @Composable
-private fun AssetsScreen() {
+private fun AssetsScreen(
+    importedCount: Int,
+    importStatus: String,
+    selectedDataset: String,
+    onSelectedDataset: (String) -> Unit,
+    importing: Boolean,
+    onImportChinaBuildings: () -> Unit,
+    onClearImported: () -> Unit
+) {
+    val context = LocalContext.current
     Column(
         Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 18.dp, vertical = 20.dp),
         verticalArrangement = Arrangement.spacedBy(13.dp)
     ) {
-        Text("素材", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Ink)
+        Text("素材与建筑数据", fontSize = 23.sp, fontWeight = FontWeight.Bold, color = Ink)
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            color = Color.White,
+            border = BorderStroke(1.dp, DividerColor)
+        ) {
+            Column(
+                Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(9.dp)
+            ) {
+                Text("中国逐栋建筑高度数据", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Ink)
+                Text(
+                    if (selectedDataset == "3D-GloBFP") {
+                        "3D-GloBFP：中国省级逐栋建筑轮廓与估算高度（米），CC BY 4.0。"
+                    } else {
+                        "中国十城 2018：北京、长沙、成都、杭州、南京、上海、沈阳、天津、武汉、西安的逐栋建筑面和估算高度；请遵循数据门户使用条款。"
+                    },
+                    fontSize = 11.sp,
+                    color = Muted
+                )
+                Text(
+                    "步骤：先在“地图”页圈选目标范围；下载对应省份/城市的单个 Shapefile 图层；把同名 .shp、.dbf、.shx、.prj 放进一个 ZIP；返回此处导入。不要下载几十 GB 的整个全球合包。",
+                    fontSize = 11.sp,
+                    color = Ink
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FilterChip(
+                        selected = selectedDataset == "3D-GloBFP",
+                        onClick = { onSelectedDataset("3D-GloBFP") },
+                        label = { Text("3D-GloBFP（推荐）", fontSize = 10.sp) }
+                    )
+                    FilterChip(
+                        selected = selectedDataset == "China Urban Building Footprint Height Dataset (2018)",
+                        onClick = { onSelectedDataset("China Urban Building Footprint Height Dataset (2018)") },
+                        label = { Text("中国十城 2018", fontSize = 10.sp) }
+                    )
+                }
+                Button(
+                    onClick = onImportChinaBuildings,
+                    enabled = !importing,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    if (importing) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
+                        Spacer(Modifier.width(8.dp))
+                        Text("正在导入…")
+                    } else {
+                        Icon(Icons.Outlined.FileDownload, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("导入中国建筑高度 ZIP")
+                    }
+                }
+                Text(
+                    "当前已载入：${importedCount} 栋",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (importedCount > 0) Accent else Muted
+                )
+                Text(importStatus, fontSize = 10.sp, color = if (importStatus.startsWith("导入失败")) MaterialTheme.colorScheme.error else Muted)
+                if (importedCount > 0) {
+                    TextButton(onClick = onClearImported) { Text("清除已导入建筑") }
+                }
+                TextButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://doi.org/10.5281/zenodo.15459025"))) }) {
+                    Text("打开 3D-GloBFP 数据集与省级文件索引")
+                }
+                TextButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.geodata.cn/main/face_science_detail?guid=135869909769675"))) }) {
+                    Text("中国十城建筑高度数据（2018）")
+                }
+                Text(
+                    "提示：十城数据页面未明确列出与 3D-GloBFP 相同的 CC BY 许可；请先核对数据门户使用条款。导入功能只读取本地 ZIP，不会把该数据上传或随 APK 再分发。",
+                    fontSize = 10.sp,
+                    color = Muted
+                )
+            }
+        }
         AssetRow(Icons.Outlined.Forest, "群系")
         AssetRow(Icons.Outlined.AccountTree, "结构与遗迹")
         AssetRow(Icons.Outlined.Layers, "地表规则")
-        Text("素材编辑暂未开放", fontSize = 11.sp, color = Muted)
+        Text("中国建筑数据导入后，采集高程并保存项目，建筑轮廓和高度会写入最终 .mcworld。", fontSize = 11.sp, color = Muted)
     }
 }
 
@@ -1780,7 +1985,7 @@ private fun NewProjectDialog(
     var name by rememberSaveable { mutableStateOf("") }
     var size by rememberSaveable { mutableIntStateOf(10000) }
     var metersPerBlock by rememberSaveable { mutableIntStateOf(4) }
-    var verticalExaggeration by rememberSaveable { mutableFloatStateOf(2f) }
+    var verticalExaggeration by rememberSaveable { mutableFloatStateOf(1f) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1818,7 +2023,7 @@ private fun NewProjectDialog(
                     }
                 }
                 Text(
-                    "默认 2× 让低起伏地区更容易看出山坡；1× 保留真实垂直比例",
+                    "默认 1×：水平和垂直按同一现实米/方块比例；仅当地形高差超过游戏高度范围时自动压缩",
                     fontSize = 10.sp,
                     color = Muted
                 )
