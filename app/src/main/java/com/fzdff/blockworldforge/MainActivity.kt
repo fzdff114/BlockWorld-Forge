@@ -1143,7 +1143,7 @@ private fun downloadTerrariumTile(x: Int, y: Int, zoom: Int): Bitmap {
         connectTimeout = 20000
         readTimeout = 30000
         setRequestProperty("Accept", "image/png")
-        setRequestProperty("User-Agent", "Atlas-Android/0.4.0 (real-world Bedrock map)")
+        setRequestProperty("User-Agent", "Atlas-Android/0.4.1 (real-world Bedrock map)")
     }
     try {
         val status = connection.responseCode
@@ -1188,7 +1188,7 @@ private fun fetchOsmBuildings(west: Double, east: Double, south: Double, north: 
             readTimeout = 35000
             setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
             setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "Atlas-Android/0.4.0 (OpenStreetMap building import)")
+            setRequestProperty("User-Agent", "Atlas-Android/0.4.1 (OpenStreetMap building import)")
         }
         try {
             val request = ("data=" + URLEncoder.encode(query, "UTF-8")).toByteArray(Charsets.UTF_8)
