@@ -3,7 +3,7 @@
     <application
         android:allowBackup="true"
         android:icon="@drawable/ic_launcher"
-        android:label="方块世界工坊"
+        android:label="Atlas"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
         <activity
