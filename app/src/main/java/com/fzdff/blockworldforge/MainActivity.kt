@@ -1112,8 +1112,8 @@ private fun fetchElevationGrid(boundary: List<GeoCoordinate>): ElevationGrid {
         val latitude = north - ((row + 0.5) / rows.toDouble()) * (north - south)
         for (column in 0 until columns) {
             val longitude = west + ((column + 0.5) / columns.toDouble()) * (east - west)
-            val point = GeoCoordinate(latitude, longitude)
-            if (!isInsidePolygon(point, boundary)) continue
+            // Sample the complete bounding grid; export still masks every voxel to the chosen polygon.
+            // Neighbor samples just outside the boundary prevent expensive nearest-point fallbacks at its edge.
             val tile = terrariumTilePosition(longitude, latitude, zoom)
             pixels.add(TerrariumPixel(row, column, tile.first, tile.second, tile.third.first, tile.third.second))
         }
