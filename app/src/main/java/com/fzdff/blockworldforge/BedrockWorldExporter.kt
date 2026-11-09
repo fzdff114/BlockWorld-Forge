@@ -133,6 +133,12 @@ internal object BedrockWorldExporter {
             )
 
             File(worldFolder, "levelname.txt").writeText(worldName.take(64), Charsets.UTF_8)
+            File(worldFolder, "atlas_attribution.txt").writeText(
+                "Terrain elevation: Mapzen Terrain Tiles, AWS Open Data; source data includes SRTM and other open datasets.\\n" +
+                    "Building footprints: © OpenStreetMap contributors, licensed under ODbL.\\n" +
+                    "Map style: OpenFreeMap © OpenMapTiles; data © OpenStreetMap contributors.\\n",
+                Charsets.UTF_8
+            )
             val spawn = chooseSpawn(input, metersPerBlock)
             val levelDat = encodeLevelDat(
                 worldName = worldName,
