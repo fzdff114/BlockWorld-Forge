@@ -103,12 +103,12 @@ private fun ForgeApp() {
             TopAppBar(
                 title = {
                     Column {
-                        Text("BlockWorld Forge", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Ink)
+                        Text("方块世界工坊", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Ink)
                         Text(pages.first { it.id == tab }.title, fontSize = 10.sp, color = Muted)
                     }
                 },
                 actions = {
-                    IconButton(onClick = { Toast.makeText(context, "BlockWorld Forge 原生 Android 预览版", Toast.LENGTH_SHORT).show() }) {
+                    IconButton(onClick = { Toast.makeText(context, "方块世界工坊 原生 Android 预览版", Toast.LENGTH_SHORT).show() }) {
                         Icon(Icons.Outlined.HelpOutline, contentDescription = "帮助", tint = Muted)
                     }
                 },
@@ -148,7 +148,7 @@ private fun ForgeApp() {
                 }
                 "assets" -> AssetsScreen()
                 "export" -> ExportScreen {
-                    Toast.makeText(context, "Bedrock 导出器尚未实现。", Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, "基岩版导出器尚未实现。", Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -183,7 +183,7 @@ private fun displayName(context: Context, uri: Uri): String {
 private fun HomeScreen(projects: List<WorldProject>, onCreate: () -> Unit) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            Eyebrow("YOUR WORLD, YOUR RULES")
+            Eyebrow("打造你的方块世界")
             Text("世界工作台", fontSize = 25.sp, fontWeight = FontWeight.Bold, color = Ink)
             Text("从真实地理数据到属于你的方块世界，把构想变成可探索的地图。", fontSize = 11.sp, color = Muted, lineHeight = 17.sp)
         }
@@ -206,7 +206,7 @@ private fun HomeScreen(projects: List<WorldProject>, onCreate: () -> Unit) {
             Spacer(Modifier.height(13.dp))
             Step("02", "地形与生态", "配置高度、群系与细节")
             Spacer(Modifier.height(13.dp))
-            Step("03", "生成与导出", "构建并导出 Bedrock 世界")
+            Step("03", "生成与导出", "构建并导出 基岩版世界")
             Spacer(Modifier.height(16.dp))
             Button(onClick = onCreate, modifier = Modifier.fillMaxWidth().height(44.dp), shape = RoundedCornerShape(11.dp)) {
                 Icon(Icons.Outlined.Add, null)
@@ -219,7 +219,7 @@ private fun HomeScreen(projects: List<WorldProject>, onCreate: () -> Unit) {
             StateRow("界面与项目工作台", "已搭建", true)
             StateRow("地图数据接入", "规划中")
             StateRow("地形生成引擎", "规划中")
-            StateRow("Bedrock 导出", "规划中")
+            StateRow("基岩版导出", "规划中")
         }
         Spacer(Modifier.height(6.dp))
     }
@@ -233,10 +233,10 @@ private fun Hero(onCreate: () -> Unit) {
         ) {
             Column(Modifier.fillMaxWidth(.82f), verticalArrangement = Arrangement.spacedBy(9.dp)) {
                 Surface(color = Color.White.copy(alpha = .15f), shape = CircleShape) {
-                    Text("✦  BLOCKWORLD FORGE PREVIEW", Modifier.padding(horizontal = 9.dp, vertical = 6.dp), color = Color.White, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                    Text("✦  方块世界工坊 · 预览版", Modifier.padding(horizontal = 9.dp, vertical = 6.dp), color = Color.White, fontSize = 8.sp, fontWeight = FontWeight.Bold)
                 }
                 Text("把真实世界，\n锻造成方块世界。", fontSize = 22.sp, lineHeight = 30.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
-                Text("选择一片区域，配置地形与生态，再将它构建为 Minecraft Bedrock 世界。", fontSize = 9.sp, lineHeight = 15.sp, color = Color(0xFFE1EDFF))
+                Text("选择一片区域，配置地形与生态，再将它构建为 Minecraft 基岩版 世界。", fontSize = 9.sp, lineHeight = 15.sp, color = Color(0xFFE1EDFF))
                 Button(onClick = onCreate, colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Blue), shape = RoundedCornerShape(9.dp)) {
                     Text("开始创建", fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     Icon(Icons.Outlined.ArrowForward, null, modifier = Modifier.size(14.dp))
@@ -289,7 +289,7 @@ private fun ProjectItem(project: WorldProject, index: Int) {
         }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(project.name, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text("Bedrock · ${project.size.toLocaleString()} × ${project.size.toLocaleString()}", fontSize = 8.sp, color = Muted)
+            Text("基岩版 · ${project.size.toLocaleString()} × ${project.size.toLocaleString()}", fontSize = 8.sp, color = Muted)
             Text(project.status, fontSize = 8.sp, color = Color(0xFF8DA0B8))
         }
         Icon(Icons.Outlined.ChevronRight, null, tint = Color(0xFFB8C2D0), modifier = Modifier.size(16.dp))
@@ -325,7 +325,7 @@ private fun StateRow(title: String, state: String, done: Boolean = false) {
 @Composable
 private fun MapsScreen(selectedFile: String, onPick: () -> Unit) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(13.dp)) {
-        PageTitle("地图数据", "MAP DATA WORKSPACE", "选择地图来源，导入地理数据，为世界生成准备真实地形基础。")
+        PageTitle("地图数据", "地图数据工作区", "选择地图来源，导入地理数据，为世界生成准备真实地形基础。")
         SurfaceCard {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Surface(color = PaleBlue, shape = RoundedCornerShape(9.dp)) {
@@ -348,7 +348,7 @@ private fun MapsScreen(selectedFile: String, onPick: () -> Unit) {
         }
         Heading("可接入的数据来源", "地图供应商适配器尚未实现")
         SourceCard("高", "高德地图", "可作为区域搜索与位置选择入口；数据使用范围需按授权接入。", Color(0xFFFFF0ED), Color(0xFFE45C4A))
-        SourceCard("OSM", "OpenStreetMap", "后续用于道路、建筑与地物数据适配。", Color(0xFFEEF8E9), Color(0xFF609D4E))
+        SourceCard("OSM", "开放街图", "后续用于道路、建筑与地物数据适配。", Color(0xFFEEF8E9), Color(0xFF609D4E))
         SourceCard("▲", "高程与地表数据", "为高度、坡度、水系与地表覆盖提供数据基础。", PaleBlue, Blue)
         InfoCard("不同地图服务的数据许可、缓存与衍生作品规则不同。正式接入前会确认数据来源与授权范围。")
     }
@@ -380,10 +380,10 @@ private fun BuilderScreen(
     onSave: () -> Unit
 ) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(13.dp)) {
-        PageTitle("世界生成", "WORLD BUILDER", "设置世界尺寸、目标版本与地形风格。当前为原生配置界面预览。")
+        PageTitle("世界生成", "世界生成配置", "设置世界尺寸、目标版本与地形风格。当前为原生配置界面预览。")
         SurfaceCard {
             Text("基础设置", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-            Text("目标平台：Minecraft Bedrock", fontSize = 9.sp, color = Muted, modifier = Modifier.padding(top = 7.dp))
+            Text("目标平台：Minecraft 基岩版", fontSize = 9.sp, color = Muted, modifier = Modifier.padding(top = 7.dp))
             Text("世界边长：${size.toLocaleString()} × ${size.toLocaleString()}", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 12.dp))
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                 listOf(4000, 6000, 10000, 15000, 20000).forEach { option ->
@@ -435,7 +435,7 @@ private fun Setting(title: String, description: String, checked: Boolean, onChan
 @Composable
 private fun AssetsScreen() {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(13.dp)) {
-        PageTitle("资源库", "ASSET LIBRARY", "管理群系规则、结构模板与可复用的世界资源。")
+        PageTitle("资源库", "资源素材库", "管理群系规则、结构模板与可复用的世界资源。")
         AssetCard(Icons.Outlined.Forest, "群系预设", "森林、草原、针叶林、沙漠、雪原与自定义生态规则。", Color(0xFFEAF6E8), Color(0xFF4D9565))
         AssetCard(Icons.Outlined.AccountTree, "结构与遗迹", "规划遗迹、村庄、地牢与可探索点位；后续支持导入 .mcstructure。", Color(0xFFF0EEFF), Color(0xFF7566C4))
         AssetCard(Icons.Outlined.Layers, "地表材质规则", "地表方块映射、地貌过渡与材质分布规则。", PaleBlue, Blue)
@@ -461,13 +461,13 @@ private fun AssetCard(icon: ImageVector, title: String, description: String, bac
 @Composable
 private fun ExportScreen(onExport: () -> Unit) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(13.dp)) {
-        PageTitle("导出中心", "EXPORT CENTER", "管理世界构建产物，规划 Minecraft 可导入的文件格式。")
+        PageTitle("导出中心", "世界导出中心", "管理世界构建产物，规划 Minecraft 可导入的文件格式。")
         SurfaceCard {
             Surface(color = PaleBlue, shape = RoundedCornerShape(11.dp)) {
                 Icon(Icons.Outlined.FileUpload, null, tint = Blue, modifier = Modifier.padding(13.dp).size(28.dp))
             }
             Text("准备好后，导出你的世界", fontSize = 15.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp))
-            Text("目标格式为 Minecraft Bedrock 世界包（.mcworld）。当前尚未实现实际导出。", fontSize = 9.sp, color = Muted, lineHeight = 15.sp, modifier = Modifier.padding(top = 5.dp))
+            Text("目标格式为 Minecraft 基岩版 世界包（.mcworld）。当前尚未实现实际导出。", fontSize = 9.sp, color = Muted, lineHeight = 15.sp, modifier = Modifier.padding(top = 5.dp))
             Spacer(Modifier.height(15.dp))
             Step("01", "完成地形生成", "生成区块、地形与生态")
             Spacer(Modifier.height(12.dp))
@@ -480,7 +480,7 @@ private fun ExportScreen(onExport: () -> Unit) {
                 Icon(Icons.Outlined.ArrowForward, null, modifier = Modifier.padding(start = 5.dp).size(15.dp))
             }
         }
-        InfoCard("兼容性目标：优先面向 Android 版 Minecraft Bedrock。正式导出前将检查世界数据库、清单与文件结构完整性。")
+        InfoCard("兼容性目标：优先面向 Android 版 Minecraft 基岩版。正式导出前将检查世界数据库、清单与文件结构完整性。")
     }
 }
 
@@ -524,7 +524,7 @@ private fun NewProjectDialog(onDismiss: () -> Unit, onCreate: (String, Int) -> U
                         FilterChip(selected = size == option, onClick = { size = option }, label = { Text("${option / 1000}K", fontSize = 8.sp) })
                     }
                 }
-                Text("目标平台：Minecraft Bedrock", fontSize = 9.sp, color = Muted)
+                Text("目标平台：Minecraft 基岩版", fontSize = 9.sp, color = Muted)
             }
         },
         confirmButton = { TextButton(onClick = { onCreate(name, size) }) { Text("创建项目") } },
