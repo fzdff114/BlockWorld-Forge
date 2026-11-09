@@ -794,6 +794,7 @@ private fun MapScreen(
                         onClick = {
                             if (selectionMode == "矩形" && rectangleFirstCorner != null) {
                                 rectangleFirstCorner = null
+                                onClear()
                                 errorMessage = "已取消第一个角点"
                             } else if (selectionMode == "多边形") {
                                 onUndo()
