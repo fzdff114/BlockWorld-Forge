@@ -59,6 +59,9 @@ import org.maplibre.android.style.layers.PropertyFactory.lineColor
 import org.maplibre.android.style.layers.PropertyFactory.lineWidth
 import org.maplibre.android.style.sources.GeoJsonSource
 import java.io.IOException
+import java.io.File
+import java.io.FileOutputStream
+import java.security.MessageDigest
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -115,7 +118,7 @@ private data class ElevationGrid(
     val buildingError: String? = null
 ) {
     val summary: String
-        get() = "海拔 ${minimum.roundToInt()}–${maximum.roundToInt()} m"
+        get() = "海拔 ${minimum.roundToInt()}–${maximum.roundToInt()} m · 起伏 ${(maximum - minimum).roundToInt()} m"
 }
 
 private data class RegionDraft(
@@ -134,7 +137,8 @@ private data class WorldProject(
     val regionSummary: String? = null,
     val elevationSummary: String? = null,
     val regionDataJson: String? = null,
-    val metersPerBlock: Int = 4
+    val metersPerBlock: Int = 4,
+    val verticalExaggeration: Double = 2.0
 )
 
 class MainActivity : ComponentActivity() {
@@ -280,6 +284,7 @@ private fun AtlasApp(mapView: MapView, map: MapLibreMap?) {
                             worldName = project.name,
                             regionJson = project.regionDataJson!!,
                             metersPerBlock = project.metersPerBlock,
+                            verticalExaggeration = project.verticalExaggeration,
                             outputUri = uri
                         ) { completed, total ->
                             scope.launch {
@@ -429,7 +434,7 @@ private fun AtlasApp(mapView: MapView, map: MapLibreMap?) {
             regionSummary = pendingRegion?.summary,
             hasElevation = pendingRegion?.elevation != null,
             onDismiss = { showNewProject = false },
-            onCreate = { name, size, metersPerBlock ->
+            onCreate = { name, size, metersPerBlock, verticalExaggeration ->
                 val region = pendingRegion
                 projects.add(
                     0,
@@ -439,7 +444,8 @@ private fun AtlasApp(mapView: MapView, map: MapLibreMap?) {
                         regionSummary = region?.summary,
                         elevationSummary = region?.elevation?.summary,
                         regionDataJson = region?.let { regionDraftJson(it) },
-                        metersPerBlock = metersPerBlock
+                        metersPerBlock = metersPerBlock,
+                        verticalExaggeration = verticalExaggeration
                     )
                 )
                 saveProjects(context, projects)
@@ -546,7 +552,8 @@ private fun ProjectRow(project: WorldProject) {
                 )
                 if (project.regionSummary != null) {
                     Text(
-                        "范围 " + project.regionSummary + " · 比例 1:" + project.metersPerBlock,
+                        "范围 " + project.regionSummary + " · 比例 1:" + project.metersPerBlock +
+                            " · 地形起伏 " + project.verticalExaggeration + "×",
                         fontSize = 10.sp,
                         color = Color(0xFF60728D)
                     )
@@ -588,6 +595,7 @@ private fun MapScreen(
     var errorMessage by remember { mutableStateOf("") }
     var show3d by rememberSaveable { mutableStateOf(false) }
     var selectionMode by rememberSaveable { mutableStateOf("矩形") }
+    var terrainSampleSpacing by rememberSaveable { mutableIntStateOf(30) }
     var rectangleFirstCorner by remember { mutableStateOf<GeoCoordinate?>(null) }
 
     DisposableEffect(map, selectionMode, rectangleFirstCorner) {
@@ -843,6 +851,24 @@ private fun MapScreen(
                     Spacer(Modifier.weight(1f))
                 }
 
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text("高程采样", fontSize = 11.sp, color = Muted)
+                    FilterChip(
+                        selected = terrainSampleSpacing == 30,
+                        onClick = { terrainSampleSpacing = 30 },
+                        label = { Text("快速 30m", fontSize = 10.sp) }
+                    )
+                    FilterChip(
+                        selected = terrainSampleSpacing == 20,
+                        onClick = { terrainSampleSpacing = 20 },
+                        label = { Text("精细 20m", fontSize = 10.sp) }
+                    )
+                }
+
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
                         onClick = {
@@ -853,7 +879,7 @@ private fun MapScreen(
                                 try {
                                     captureStatus = "准备下载高程瓦片…"
                                     val result = withContext(Dispatchers.IO) {
-                                        fetchElevationGrid(snapshot) { phase, completed, total ->
+                                        fetchElevationGrid(context, snapshot, terrainSampleSpacing) { phase, completed, total ->
                                             scope.launch {
                                                 captureStatus = if (total > 1) {
                                                     phase + " " + completed + "/" + total
@@ -1064,7 +1090,7 @@ private fun geocodePlace(query: String): GeoCoordinate {
         connectTimeout = 10000
         readTimeout = 15000
         setRequestProperty("Accept", "application/json")
-        setRequestProperty("User-Agent", "Atlas-Android/0.4.1 (https://github.com/fzdff114/BlockWorld-Forge)")
+        setRequestProperty("User-Agent", "BlockWorld-Forge-Android/0.4.2 (https://github.com/fzdff114/BlockWorld-Forge)")
     }
     try {
         val status = connection.responseCode
@@ -1120,9 +1146,19 @@ internal fun terrariumTilePixelIndex(pixel256: Int, tileDimension: Int): Int {
         .coerceIn(0, tileDimension - 1)
 }
 
-private fun chooseTerrariumZoom(west: Double, east: Double, south: Double, north: Double): Int {
-    // Zoom 14 is enough for a ~30 m terrain grid; avoid downloading over-zoomed tiles.
-    for (zoom in 14 downTo 8) {
+internal fun chooseTerrariumZoom(
+    west: Double,
+    east: Double,
+    south: Double,
+    north: Double,
+    maximumTiles: Int = 196
+): Int {
+    require(west < east && south < north)
+    require(maximumTiles in 1..256)
+    // Do not silently fall back to very coarse z8 tiles: the resulting DEM would
+    // create broad plateaus. If a large region cannot fit a useful zoom, ask for
+    // a smaller selection instead of creating misleadingly flat terrain.
+    for (zoom in 14 downTo 12) {
         val corners = listOf(
             terrariumTilePosition(west, north, zoom),
             terrariumTilePosition(east, north, zoom),
@@ -1131,34 +1167,73 @@ private fun chooseTerrariumZoom(west: Double, east: Double, south: Double, north
         )
         val tileWidth = corners.maxOf { it.first } - corners.minOf { it.first } + 1
         val tileHeight = corners.maxOf { it.second } - corners.minOf { it.second } + 1
-        if (tileWidth.toLong() * tileHeight.toLong() <= 64L) return zoom
+        if (tileWidth.toLong() * tileHeight.toLong() <= maximumTiles.toLong()) return zoom
     }
-    return 8
+    throw IOException("此区域过大，无法在保留地形细节的情况下采集。请缩小地图范围后重试。")
 }
 
-private fun downloadTerrariumTile(x: Int, y: Int, zoom: Int): Bitmap {
+private fun downloadTerrariumTile(
+    context: android.content.Context,
+    x: Int,
+    y: Int,
+    zoom: Int
+): Bitmap {
+    val cacheRoot = File(context.filesDir, "dem-tile-cache").apply { mkdirs() }
+    val cacheFile = File(cacheRoot, "${zoom}_${x}_${y}.png")
+
+    if (cacheFile.isFile && cacheFile.length() > 128L) {
+        val cached = BitmapFactory.decodeFile(cacheFile.absolutePath)
+        if (cached != null && cached.width >= 256 && cached.height >= 256) return cached
+        cached?.recycle()
+        cacheFile.delete()
+    }
+
+    val tempFile = File(cacheRoot, cacheFile.name + ".part")
     val endpoint = URL("https://s3.amazonaws.com/elevation-tiles-prod/terrarium/$zoom/$x/$y.png")
     val connection = (endpoint.openConnection() as HttpURLConnection).apply {
         requestMethod = "GET"
         connectTimeout = 20000
         readTimeout = 30000
         setRequestProperty("Accept", "image/png")
-        setRequestProperty("User-Agent", "Atlas-Android/0.4.1 (real-world Bedrock map)")
+        setRequestProperty("User-Agent", "BlockWorld-Forge-Android/0.4.2 (terrain tile cache)")
     }
     try {
         val status = connection.responseCode
         if (status !in 200..299) {
             throw IOException("DEM 瓦片请求失败 HTTP $status（z=$zoom x=$x y=$y）")
         }
-        val bitmap = connection.inputStream.use { BitmapFactory.decodeStream(it) }
+        connection.inputStream.use { input ->
+            FileOutputStream(tempFile).use { output -> input.copyTo(output, 64 * 1024) }
+        }
+        val bitmap = BitmapFactory.decodeFile(tempFile.absolutePath)
             ?: throw IOException("DEM 瓦片无法解码（z=$zoom x=$x y=$y）")
         if (bitmap.width < 256 || bitmap.height < 256) {
             bitmap.recycle()
             throw IOException("DEM 瓦片尺寸不正确")
         }
+        if (!tempFile.renameTo(cacheFile)) {
+            tempFile.copyTo(cacheFile, overwrite = true)
+            tempFile.delete()
+        }
+        trimDemTileCache(cacheRoot)
         return bitmap
+    } catch (error: Exception) {
+        tempFile.delete()
+        throw error
     } finally {
         connection.disconnect()
+    }
+}
+
+@Synchronized
+private fun trimDemTileCache(cacheRoot: File) {
+    val files = cacheRoot.listFiles()?.filter { it.isFile && it.extension == "png" }.orEmpty()
+    var bytes = files.sumOf { it.length() }
+    val limit = 384L * 1024L * 1024L
+    for (file in files.sortedBy { it.lastModified() }) {
+        if (bytes <= limit) break
+        val length = file.length()
+        if (file.delete()) bytes -= length
     }
 }
 
@@ -1170,92 +1245,129 @@ private fun parseOsmHeight(tags: JSONObject, key: String): Double? {
     return number?.takeIf { it.isFinite() && it >= 0.0 }
 }
 
-private fun fetchOsmBuildings(west: Double, east: Double, south: Double, north: Double): List<OsmBuilding> {
+private fun fetchOsmBuildings(
+    context: android.content.Context,
+    west: Double,
+    east: Double,
+    south: Double,
+    north: Double
+): List<OsmBuilding> {
+    val cacheRoot = File(context.filesDir, "osm-building-cache").apply { mkdirs() }
+    val cacheKey = String.format(Locale.US, "%.5f,%.5f,%.5f,%.5f", west, east, south, north)
+    val digest = MessageDigest.getInstance("SHA-256").digest(cacheKey.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
+    val cacheFile = File(cacheRoot, "osm-$digest.json")
+    val cacheFresh = cacheFile.isFile &&
+        cacheFile.length() > 2L &&
+        System.currentTimeMillis() - cacheFile.lastModified() < 7L * 24L * 60L * 60L * 1000L
+
     val query = "[out:json][timeout:25][maxsize:33554432];(" +
         "way[\"building\"]($south,$west,$north,$east);" +
         "relation[\"building\"]($south,$west,$north,$east);" +
+        "way[\"building:part\"]($south,$west,$north,$east);" +
+        "relation[\"building:part\"]($south,$west,$north,$east);" +
         ");out tags geom qt;"
-    val endpoints = listOf(
-        "https://overpass-api.de/api/interpreter",
-        "https://overpass.kumi.systems/api/interpreter"
-    )
-    var lastError: Exception? = null
-    for (endpointUrl in endpoints) {
-        val connection = (URL(endpointUrl).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            doOutput = true
-            connectTimeout = 12000
-            readTimeout = 35000
-            setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "Atlas-Android/0.4.1 (OpenStreetMap building import)")
+    var body: String? = if (cacheFresh) runCatching { cacheFile.readText(Charsets.UTF_8) }.getOrNull() else null
+
+    if (body == null) {
+        val endpoints = listOf(
+            "https://overpass-api.de/api/interpreter",
+            "https://overpass.kumi.systems/api/interpreter"
+        )
+        var lastError: Exception? = null
+        for (endpointUrl in endpoints) {
+            val connection = (URL(endpointUrl).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = true
+                connectTimeout = 12000
+                readTimeout = 35000
+                setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+                setRequestProperty("Accept", "application/json")
+                setRequestProperty("User-Agent", "BlockWorld-Forge-Android/0.4.2 (OpenStreetMap building import)")
+            }
+            try {
+                val request = ("data=" + URLEncoder.encode(query, "UTF-8")).toByteArray(Charsets.UTF_8)
+                connection.outputStream.use { it.write(request) }
+                val status = connection.responseCode
+                if (status !in 200..299) {
+                    val details = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                    throw IOException("OSM 建筑服务 HTTP $status " + details.take(180))
+                }
+                body = connection.inputStream.bufferedReader().use { it.readText() }
+                val root = JSONObject(body!!)
+                if (root.has("remark")) throw IOException(root.optString("remark"))
+                cacheFile.writeText(body!!, Charsets.UTF_8)
+                break
+            } catch (error: Exception) {
+                lastError = error
+                body = null
+            } finally {
+                connection.disconnect()
+            }
         }
-        try {
-            val request = ("data=" + URLEncoder.encode(query, "UTF-8")).toByteArray(Charsets.UTF_8)
-            connection.outputStream.use { it.write(request) }
-            val status = connection.responseCode
-            if (status !in 200..299) {
-                val details = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
-                throw IOException("OSM 建筑服务 HTTP $status " + details.take(180))
-            }
-            val body = connection.inputStream.bufferedReader().use { it.readText() }
-            val elements = JSONObject(body).optJSONArray("elements") ?: JSONArray()
-            val buildings = ArrayList<OsmBuilding>()
-            for (i in 0 until elements.length()) {
-                if (buildings.size >= 10000) break
-                val element = elements.optJSONObject(i) ?: continue
-                val tags = element.optJSONObject("tags") ?: JSONObject()
-                val height = parseOsmHeight(tags, "height")
-                    ?: (parseOsmHeight(tags, "building:levels")?.times(3.2))
-                    ?: 8.0
-                val minHeight = parseOsmHeight(tags, "min_height")
-                    ?: (parseOsmHeight(tags, "building:min_level")?.times(3.2))
-                    ?: 0.0
-                val name = tags.optString("name").takeIf { it.isNotBlank() && it != "null" }
-                val geometries = mutableListOf<JSONArray>()
-                val direct = element.optJSONArray("geometry")
-                if (direct != null) {
-                    geometries.add(direct)
-                } else {
-                    val members = element.optJSONArray("members") ?: continue
-                    for (memberIndex in 0 until members.length()) {
-                        val member = members.optJSONObject(memberIndex) ?: continue
-                        if (member.optString("type") != "way" || member.optString("role") == "inner") continue
-                        member.optJSONArray("geometry")?.let { geometries.add(it) }
-                    }
-                }
-                for (geometry in geometries) {
-                    if (buildings.size >= 20000) break
-                    val polygon = (0 until geometry.length()).mapNotNull { pointIndex ->
-                        val point = geometry.optJSONObject(pointIndex) ?: return@mapNotNull null
-                        val lat = point.optDouble("lat", Double.NaN)
-                        val lon = point.optDouble("lon", Double.NaN)
-                        if (!lat.isFinite() || !lon.isFinite()) null else GeoCoordinate(lat, lon)
-                    }
-                    if (polygon.size >= 4) {
-                        buildings.add(
-                            OsmBuilding(
-                                polygon = polygon,
-                                heightMeters = height.coerceAtLeast(3.0),
-                                minHeightMeters = minHeight.coerceAtLeast(0.0),
-                                name = name
-                            )
-                        )
-                    }
-                }
-            }
-            return buildings
-        } catch (error: Exception) {
-            lastError = error
-        } finally {
-            connection.disconnect()
+        if (body == null) {
+            throw IOException(lastError?.localizedMessage ?: "OSM 建筑数据暂不可用")
         }
     }
-    throw IOException(lastError?.localizedMessage ?: "OSM 建筑数据暂不可用")
+
+    val elements = JSONObject(body!!).optJSONArray("elements") ?: JSONArray()
+    val buildings = ArrayList<OsmBuilding>()
+    val seenFootprints = HashSet<String>()
+    for (i in 0 until elements.length()) {
+        if (buildings.size >= 20000) break
+        val element = elements.optJSONObject(i) ?: continue
+        val tags = element.optJSONObject("tags") ?: JSONObject()
+        val height = parseOsmHeight(tags, "height")
+            ?: (parseOsmHeight(tags, "building:levels")?.times(3.2))
+            ?: 8.0
+        val minHeight = parseOsmHeight(tags, "min_height")
+            ?: (parseOsmHeight(tags, "building:min_level")?.times(3.2))
+            ?: 0.0
+        val name = tags.optString("name").takeIf { it.isNotBlank() && it != "null" }
+        val geometries = mutableListOf<JSONArray>()
+        val direct = element.optJSONArray("geometry")
+        if (direct != null) {
+            geometries.add(direct)
+        } else {
+            val members = element.optJSONArray("members") ?: continue
+            for (memberIndex in 0 until members.length()) {
+                val member = members.optJSONObject(memberIndex) ?: continue
+                if (member.optString("type") != "way" || member.optString("role") == "inner") continue
+                member.optJSONArray("geometry")?.let { geometries.add(it) }
+            }
+        }
+        for (geometry in geometries) {
+            if (buildings.size >= 20000) break
+            val polygon = (0 until geometry.length()).mapNotNull { pointIndex ->
+                val point = geometry.optJSONObject(pointIndex) ?: return@mapNotNull null
+                val lat = point.optDouble("lat", Double.NaN)
+                val lon = point.optDouble("lon", Double.NaN)
+                if (!lat.isFinite() || !lon.isFinite()) null else GeoCoordinate(lat, lon)
+            }
+            if (polygon.size >= 4) {
+                val footprintKey = polygon.joinToString("|") {
+                    String.format(Locale.US, "%.6f,%.6f", it.latitude, it.longitude)
+                }
+                if (seenFootprints.add(footprintKey)) {
+                    buildings.add(
+                        OsmBuilding(
+                            polygon = polygon,
+                            heightMeters = height.coerceAtLeast(3.0),
+                            minHeightMeters = minHeight.coerceAtLeast(0.0),
+                            name = name
+                        )
+                    )
+                }
+            }
+        }
+    }
+    return buildings
 }
 
 private fun fetchElevationGrid(
+    context: android.content.Context,
     boundary: List<GeoCoordinate>,
+    sampleSpacingMeters: Int = 30,
     onProgress: (String, Int, Int) -> Unit = { _, _, _ -> }
 ): ElevationGrid {
     require(boundary.size >= 3) { "At least three boundary points are required" }
@@ -1268,10 +1380,12 @@ private fun fetchElevationGrid(
     val widthMeters = haversineMeters(centerLatitude, west, centerLatitude, east)
     val depthMeters = haversineMeters(south, centerLongitude, north, centerLongitude)
 
-    // Source data is mainly ~30 m SRTM away from higher-resolution regional datasets.
-    // A 30 m grid avoids spending time on oversampling the same native elevation cells.
-    val columns = ceil(widthMeters / 30.0).toInt().coerceIn(2, 320)
-    val rows = ceil(depthMeters / 30.0).toInt().coerceIn(2, 320)
+    require(sampleSpacingMeters == 20 || sampleSpacingMeters == 30) { "采样间距只能为 20m 或 30m" }
+    // 30 m keeps the fast default light; 20 m captures smoother slopes without
+    // pretending the source DEM has more native accuracy than it really does.
+    val maxGridSide = if (sampleSpacingMeters == 20) 384 else 320
+    val columns = ceil(widthMeters / sampleSpacingMeters.toDouble()).toInt().coerceIn(2, maxGridSide)
+    val rows = ceil(depthMeters / sampleSpacingMeters.toDouble()).toInt().coerceIn(2, maxGridSide)
     val resolutionMeters = max(widthMeters / columns, depthMeters / rows)
     val zoom = chooseTerrariumZoom(west, east, south, north)
     val matrix = MutableList(rows) { MutableList<Double?>(columns) { null } }
@@ -1290,13 +1404,13 @@ private fun fetchElevationGrid(
     if (pixels.isEmpty()) throw IOException("圈选范围内没有有效地形采样点")
 
     val tileKeys = pixels.map { it.tileX to it.tileY }.distinct()
-    if (tileKeys.size > 64) throw IOException("当前区域需要下载过多 DEM 瓦片，请缩小圈选范围")
+    if (tileKeys.size > 196) throw IOException("当前区域需要下载过多 DEM 瓦片，请缩小圈选范围以保留地形细节")
     // Fetch OSM data in parallel with terrain tiles instead of waiting for two serial network phases.
     val executor = Executors.newFixedThreadPool(8)
     try {
         val buildingsFuture = executor.submit(Callable {
             try {
-                fetchOsmBuildings(west, east, south, north) to null
+                fetchOsmBuildings(context, west, east, south, north) to null
             } catch (error: Exception) {
                 emptyList<OsmBuilding>() to (error.localizedMessage ?: "建筑数据服务不可用")
             }
@@ -1307,7 +1421,7 @@ private fun fetchElevationGrid(
         // Eight downloads overlap; each decoded bitmap is released immediately after sampling.
         for (tileBatch in tileKeys.chunked(8)) {
             val futures = tileBatch.map { key ->
-                key to executor.submit(Callable { downloadTerrariumTile(key.first, key.second, zoom) })
+                key to executor.submit(Callable { downloadTerrariumTile(context, key.first, key.second, zoom) })
             }
             for ((key, future) in futures) {
                 val bitmap = future.get()
@@ -1337,6 +1451,8 @@ private fun fetchElevationGrid(
         if (allValues.isEmpty()) throw IOException("DEM 瓦片没有返回有效高程数据")
         onProgress("整理建筑轮廓", 0, 1)
         val buildingsAndError = buildingsFuture.get()
+        val buildingWarning = buildingsAndError.second
+            ?: if (buildingsAndError.first.isEmpty()) "该区域没有匹配到 OSM 建筑轮廓；导出前请确认是否接受无建筑地图" else null
         onProgress("采集完成", 1, 1)
         return ElevationGrid(
             rows = rows,
@@ -1349,7 +1465,7 @@ private fun fetchElevationGrid(
             resolutionMeters = resolutionMeters,
             demZoom = zoom,
             buildings = buildingsAndError.first,
-            buildingError = buildingsAndError.second
+            buildingError = buildingWarning
         )
     } finally {
         executor.shutdownNow()
@@ -1373,7 +1489,8 @@ private fun loadProjects(context: android.content.Context): List<WorldProject> {
                 regionSummary = item.optString("regionSummary").takeIf { it.isNotBlank() && it != "null" },
                 elevationSummary = item.optString("elevationSummary").takeIf { it.isNotBlank() && it != "null" },
                 regionDataJson = item.optString("regionDataJson").takeIf { it.isNotBlank() && it != "null" },
-                metersPerBlock = item.optInt("metersPerBlock", 4).let { if (it in listOf(1, 2, 4, 8, 16)) it else 4 }
+                metersPerBlock = item.optInt("metersPerBlock", 4).let { if (it in listOf(1, 2, 4, 8, 16)) it else 4 },
+                verticalExaggeration = item.optDouble("verticalExaggeration", 2.0).coerceIn(1.0, 3.0)
             )
         }
     } catch (_: Exception) {
@@ -1391,6 +1508,7 @@ private fun saveProjects(context: android.content.Context, projects: List<WorldP
             .put("elevationSummary", project.elevationSummary ?: JSONObject.NULL)
             .put("regionDataJson", project.regionDataJson ?: JSONObject.NULL)
             .put("metersPerBlock", project.metersPerBlock)
+            .put("verticalExaggeration", project.verticalExaggeration)
         array.put(item)
     }
     context.getSharedPreferences(PROJECT_PREFS, android.content.Context.MODE_PRIVATE)
@@ -1621,7 +1739,11 @@ private fun ExportScreen(
                         Icon(Icons.Outlined.Terrain, contentDescription = null, tint = Accent)
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                             Text(project.name, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text("比例 1:" + project.metersPerBlock, fontSize = 10.sp, color = Muted)
+                            Text(
+                            "比例 1:" + project.metersPerBlock + " · 地形起伏 " + project.verticalExaggeration + "×",
+                            fontSize = 10.sp,
+                            color = Muted
+                        )
                         }
                         OutlinedButton(
                             onClick = { onExport(project) },
@@ -1653,11 +1775,12 @@ private fun NewProjectDialog(
     regionSummary: String?,
     hasElevation: Boolean,
     onDismiss: () -> Unit,
-    onCreate: (String, Int, Int) -> Unit
+    onCreate: (String, Int, Int, Double) -> Unit
 ) {
     var name by rememberSaveable { mutableStateOf("") }
     var size by rememberSaveable { mutableIntStateOf(10000) }
     var metersPerBlock by rememberSaveable { mutableIntStateOf(4) }
+    var verticalExaggeration by rememberSaveable { mutableFloatStateOf(2f) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1684,6 +1807,21 @@ private fun NewProjectDialog(
                     }
                 }
                 Text("1 个方块代表 " + metersPerBlock + " 米", fontSize = 10.sp, color = Muted)
+                SectionLabel("垂直地形起伏")
+                Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    listOf(1f, 1.5f, 2f, 3f).forEach { factor ->
+                        FilterChip(
+                            selected = verticalExaggeration == factor,
+                            onClick = { verticalExaggeration = factor },
+                            label = { Text("${factor}×", fontSize = 10.sp) }
+                        )
+                    }
+                }
+                Text(
+                    "默认 2× 让低起伏地区更容易看出山坡；1× 保留真实垂直比例",
+                    fontSize = 10.sp,
+                    color = Muted
+                )
                 if (regionSummary != null) {
                     Text(
                         if (hasElevation) "已附加区域与高程：" + regionSummary else "已附加区域：" + regionSummary,
@@ -1694,7 +1832,7 @@ private fun NewProjectDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onCreate(name, size, metersPerBlock) }) { Text("创建") }
+            TextButton(onClick = { onCreate(name, size, metersPerBlock, verticalExaggeration.toDouble()) }) { Text("创建") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("取消") }

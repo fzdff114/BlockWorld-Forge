@@ -110,10 +110,12 @@ internal object BedrockWorldExporter {
         worldName: String,
         regionJson: String,
         metersPerBlock: Int,
+        verticalExaggeration: Double = 2.0,
         outputUri: Uri,
         onProgress: (Int, Int) -> Unit = { _, _ -> }
     ): BedrockExportReport {
         require(metersPerBlock in listOf(1, 2, 4, 8, 16)) { "不支持的地图比例" }
+        require(verticalExaggeration in 1.0..3.0) { "垂直地形起伏倍率必须在 1× 到 3× 之间" }
         val input = parseRegion(regionJson)
         val dimensions = scaledDimensions(input.widthMeters, input.depthMeters, metersPerBlock)
         validateDimensions(dimensions)
@@ -130,6 +132,7 @@ internal object BedrockWorldExporter {
                 input = input,
                 size = dimensions,
                 metersPerBlock = metersPerBlock,
+                verticalExaggeration = verticalExaggeration,
                 onProgress = onProgress
             )
 
@@ -140,7 +143,7 @@ internal object BedrockWorldExporter {
                     "Map style: OpenFreeMap © OpenMapTiles; data © OpenStreetMap contributors.\n",
                 Charsets.UTF_8
             )
-            val spawn = chooseSpawn(input, metersPerBlock)
+            val spawn = chooseSpawn(input, metersPerBlock, verticalExaggeration)
             val levelDat = encodeLevelDat(
                 worldName = worldName,
                 spawnX = dimensions.width / 2,
@@ -215,13 +218,34 @@ internal object BedrockWorldExporter {
             .coerceIn(MIN_Y + 4, MAX_Y - 5)
     }
 
-    internal fun terrainFloorY(minimumElevation: Double, maximumElevation: Double, metersPerBlock: Int): Int {
+    internal fun verticalMetersPerBlock(
+        metersPerBlock: Int,
+        minimumElevation: Double,
+        maximumElevation: Double,
+        verticalExaggeration: Double
+    ): Double {
         require(metersPerBlock > 0)
-        val verticalMetersPerBlock = max(
-            metersPerBlock.toDouble(),
-            max(0.0, maximumElevation) / 280.0
+        require(minimumElevation.isFinite() && maximumElevation.isFinite())
+        require(verticalExaggeration in 1.0..3.0)
+        val highestAbsoluteElevation = max(kotlin.math.abs(minimumElevation), kotlin.math.abs(maximumElevation))
+        // Preserve headroom for high mountains while allowing a selectable vertical
+        // exaggeration to make low-relief terrain visible in Minecraft.
+        return max(metersPerBlock.toDouble() / verticalExaggeration, highestAbsoluteElevation / 280.0)
+    }
+
+    internal fun terrainFloorY(
+        minimumElevation: Double,
+        maximumElevation: Double,
+        metersPerBlock: Int,
+        verticalExaggeration: Double = 1.0
+    ): Int {
+        val verticalScale = verticalMetersPerBlock(
+            metersPerBlock,
+            minimumElevation,
+            maximumElevation,
+            verticalExaggeration
         )
-        val minimumSurfaceY = (SEA_LEVEL + (minimumElevation / verticalMetersPerBlock).roundToInt())
+        val minimumSurfaceY = (SEA_LEVEL + (minimumElevation / verticalScale).roundToInt())
             .coerceIn(MIN_Y + 4, MAX_Y - 5)
         // Keep a four-block foundation below the lowest point instead of filling
         // every column all the way down to Y=-64.
@@ -391,6 +415,7 @@ internal object BedrockWorldExporter {
         input: TerrainInput,
         size: GridSize,
         metersPerBlock: Int,
+        verticalExaggeration: Double,
         onProgress: (Int, Int) -> Unit
     ): Int {
         val options = Options()
@@ -406,12 +431,14 @@ internal object BedrockWorldExporter {
         val totalChunks = validateDimensions(size).toInt()
         var chunksWritten = 0
         var processedChunks = 0
-        val verticalMetersPerBlock = max(
-            metersPerBlock.toDouble(),
-            max(0.0, input.maximum) / 280.0
+        val verticalScale = verticalMetersPerBlock(
+            metersPerBlock,
+            input.minimum,
+            input.maximum,
+            verticalExaggeration
         )
-        val worldFloorY = terrainFloorY(input.minimum, input.maximum, metersPerBlock)
-        val indexedBuildings = indexBuildings(input, size, verticalMetersPerBlock)
+        val worldFloorY = terrainFloorY(input.minimum, input.maximum, metersPerBlock, verticalExaggeration)
+        val indexedBuildings = indexBuildings(input, size, verticalScale)
         val sink = DatabaseBatchSink(db)
 
         try {
@@ -448,7 +475,7 @@ internal object BedrockWorldExporter {
                                     val point = coordinateAt(input, size, worldX, worldZ)
                                     if (!insidePolygon(point, input.polygon)) continue
                                     val elevation = sampleElevation(input, point)
-                                    val surfaceY = surfaceYForElevation(elevation, verticalMetersPerBlock)
+                                    val surfaceY = surfaceYForElevation(elevation, verticalScale)
 
                                     setBlock(sections, localX, worldFloorY, localZ, BEDROCK)
                                     for (y in worldFloorY + 1 until surfaceY - 3) {
@@ -829,11 +856,16 @@ internal object BedrockWorldExporter {
         else -> throw IllegalArgumentException("未知方块 ID：" + blockId)
     }
 
-    private fun chooseSpawn(input: TerrainInput, metersPerBlock: Int): Int {
+    private fun chooseSpawn(input: TerrainInput, metersPerBlock: Int, verticalExaggeration: Double): Int {
         val point = Point((input.west + input.east) / 2.0, (input.south + input.north) / 2.0)
         val elevation = sampleElevation(input, point)
-        val verticalMetersPerBlock = max(metersPerBlock.toDouble(), max(0.0, input.maximum) / 280.0)
-        return (SEA_LEVEL + (elevation / verticalMetersPerBlock).roundToInt() + 1)
+        val verticalScale = verticalMetersPerBlock(
+            metersPerBlock,
+            input.minimum,
+            input.maximum,
+            verticalExaggeration
+        )
+        return (SEA_LEVEL + (elevation / verticalScale).roundToInt() + 1)
             .coerceIn(MIN_Y + 4, MAX_Y - 4)
     }
 

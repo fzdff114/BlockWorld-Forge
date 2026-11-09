@@ -35,6 +35,31 @@ class BedrockWorldFormatTest {
     }
 
     @Test
+    fun verticalExaggerationMakesLowReliefTerrainMoreVisible() {
+        val naturalScale = BedrockWorldExporter.verticalMetersPerBlock(4, 100.0, 120.0, 1.0)
+        val doubledScale = BedrockWorldExporter.verticalMetersPerBlock(4, 100.0, 120.0, 2.0)
+        assertEquals(4.0, naturalScale, 0.0001)
+        assertEquals(2.0, doubledScale, 0.0001)
+        val naturalRelief = BedrockWorldExporter.surfaceYForElevation(120.0, naturalScale) -
+            BedrockWorldExporter.surfaceYForElevation(100.0, naturalScale)
+        val doubledRelief = BedrockWorldExporter.surfaceYForElevation(120.0, doubledScale) -
+            BedrockWorldExporter.surfaceYForElevation(100.0, doubledScale)
+        assertTrue(doubledRelief > naturalRelief)
+        assertEquals(10, doubledRelief)
+    }
+
+    @Test
+    fun verticalExaggerationIsBoundedForMobileWorldHeight() {
+        assertNotNull(runCatching {
+            BedrockWorldExporter.verticalMetersPerBlock(4, 0.0, 100.0, 0.5)
+        }.exceptionOrNull())
+        assertNotNull(runCatching {
+            BedrockWorldExporter.verticalMetersPerBlock(4, 0.0, 100.0, 4.0)
+        }.exceptionOrNull())
+        assertTrue(BedrockWorldExporter.verticalMetersPerBlock(4, -1200.0, 1800.0, 3.0) >= 1800.0 / 280.0)
+    }
+
+    @Test
     fun terrainFoundationStartsNearLowestSurfaceInsteadOfAlwaysAtMinY() {
         val floor = BedrockWorldExporter.terrainFloorY(500.0, 900.0, 1)
         assertTrue(floor > -64)
@@ -60,6 +85,16 @@ class BedrockWorldFormatTest {
         val high = BedrockWorldExporter.surfaceYForElevation(120.0, 2.0)
         assertTrue(high > low)
         assertEquals(50, high - low)
+    }
+
+    @Test
+    fun terrariumZoomRejectsLargeRegionsInsteadOfUsingVeryCoarseTiles() {
+        val zoom = chooseTerrariumZoom(-0.01, 0.01, -0.01, 0.01, 196)
+        assertTrue(zoom in 12..14)
+        val failure = runCatching {
+            chooseTerrariumZoom(-60.0, 60.0, -40.0, 40.0, 196)
+        }.exceptionOrNull()
+        assertNotNull(failure)
     }
 
     @Test
