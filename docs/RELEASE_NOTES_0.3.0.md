@@ -23,4 +23,4 @@
 
 - 每个方向最多 512 方块，总计最多 262,144 个地表格。
 - 当前尚无道路、建筑、树木、河网、洞穴、完整群系或遗迹。
-- 已做数据库结构和压缩读写检查，尚未完成 Android 版 Minecraft 真机导入验收。请把导出的 mcworld 导入 Minecraft 并反馈结果。
+- CI 验证：7 项 JVM 格式测试通过，Android APK 构建与上传通过。已做数据库结构和压缩读写检查，尚未完成 Android 版 Minecraft 真机导入验收。请把导出的 mcworld 导入 Minecraft 并反馈结果。
