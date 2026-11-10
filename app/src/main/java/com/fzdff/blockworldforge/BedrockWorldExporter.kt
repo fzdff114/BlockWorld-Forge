@@ -814,7 +814,7 @@ internal object BedrockWorldExporter {
         chunkMinZ: Int,
         chunkMaxZ: Int
     ) {
-        val cellSize = 7
+        val cellSize = ProceduralWorldGenerator.TREE_CELL_SIZE
         val startCellX = Math.floorDiv(chunkMinX - 8, cellSize)
         val endCellX = Math.floorDiv(chunkMaxX + 8, cellSize)
         val startCellZ = Math.floorDiv(chunkMinZ - 8, cellSize)
@@ -864,53 +864,102 @@ internal object BedrockWorldExporter {
             heightMap[index] = max(heightMap[index], py + 1)
         }
 
+        fun putLog(px: Int, py: Int, pz: Int, axis: String = "y") {
+            put(px, py, pz, WorldBlockId.withLogAxis(profile.logBlock, axis))
+        }
+
+        val wideTrunk = profile.shape == "dark_oak" || profile.shape == "giant_cone"
+        var topX = x
+        var topZ = z
+        for (dy in 1..profile.height) {
+            val drift = if (profile.shape == "acacia") ((dy - 1) / 3).coerceAtMost(2) else 0
+            val trunkX = x + profile.leanX * drift
+            val trunkZ = z + profile.leanZ * drift
+            if (wideTrunk) {
+                for (dx in 0..1) for (dz in 0..1) putLog(trunkX + dx, groundY + dy, trunkZ + dz)
+            } else {
+                putLog(trunkX, groundY + dy, trunkZ)
+            }
+            topX = trunkX
+            topZ = trunkZ
+        }
+
         val trunkTop = groundY + profile.height
-        for (dy in 1..profile.height) put(x, groundY + dy, z, profile.logBlock)
         if (profile.shape == "mangrove") {
-            for (direction in listOf(-1, 1)) {
-                for (step in 1..2) {
-                    put(x + direction * step, groundY + 1, z, profile.logBlock)
-                    put(x, groundY + 1, z + direction * step, profile.logBlock)
-                }
+            for (step in 1..3) {
+                put(x - step, groundY + 1, z, WorldBlockId.withLogAxis(WorldBlockId.MUDDY_MANGROVE_ROOTS, "x"))
+                put(x + step, groundY + 1, z, WorldBlockId.withLogAxis(WorldBlockId.MUDDY_MANGROVE_ROOTS, "x"))
+                put(x, groundY + 1, z - step, WorldBlockId.withLogAxis(WorldBlockId.MUDDY_MANGROVE_ROOTS, "z"))
+                put(x, groundY + 1, z + step, WorldBlockId.withLogAxis(WorldBlockId.MUDDY_MANGROVE_ROOTS, "z"))
+            }
+        }
+
+        fun branch(dx: Int, dz: Int, y: Int, length: Int) {
+            if (dx != 0) {
+                for (step in 1..length) putLog(topX + dx * step, y, topZ, "x")
+            } else if (dz != 0) {
+                for (step in 1..length) putLog(topX, y, topZ + dz * step, "z")
+            }
+        }
+        when (profile.shape) {
+            "acacia" -> {
+                val branchY = trunkTop - 3
+                branch(if (profile.leanX == 0) 1 else -profile.leanX, 0, branchY, 3)
+                branch(0, if (profile.leanZ == 0) 1 else -profile.leanZ, branchY - 1, 2)
+            }
+            "birch", "round", "dark_oak", "cherry", "pale", "umbrella" -> {
+                val branchY = trunkTop - if (profile.shape == "birch") 2 else 3
+                val length = if (profile.shape == "dark_oak" || profile.shape == "umbrella") 3 else 2
+                branch(1, 0, branchY, length)
+                branch(-1, 0, branchY - 1, length)
+                branch(0, 1, branchY - 1, length)
+                branch(0, -1, branchY, length)
             }
         }
 
         val crownBase = when (profile.shape) {
-            "cone", "giant_cone" -> trunkTop - (if (profile.shape == "giant_cone") 7 else 5)
-            "flat" -> trunkTop - 2
-            "umbrella" -> trunkTop - 3
+            "cone" -> trunkTop - 5
+            "giant_cone" -> trunkTop - 9
+            "birch" -> trunkTop - 4
+            "acacia", "flat" -> trunkTop - 2
+            "umbrella", "dark_oak", "mangrove", "pale", "cherry" -> trunkTop - 4
+            "mushroom" -> trunkTop + 1
             else -> trunkTop - 3
         }
-        for (layerY in crownBase..trunkTop + 1) {
+        val crownTop = trunkTop + 2
+        for (layerY in crownBase..crownTop) {
             val dy = layerY - crownBase
             val radius = when (profile.shape) {
-                "cone" -> max(1, 3 - dy / 2)
-                "giant_cone" -> max(1, 5 - dy / 2)
-                "flat" -> if (dy == 0) 4 else if (dy == 1) 3 else 2
-                "umbrella" -> if (dy == 0) 4 else if (dy < 3) 3 else 2
-                "wide" -> if (dy == 0) 4 else if (dy < 3) 3 else 2
-                "mangrove" -> if (dy < 2) 3 else 2
-                "mushroom" -> if (dy == 0) 3 else 2
-                else -> max(1, 3 - dy / 2)
+                "cone" -> max(1, 4 - dy)
+                "giant_cone" -> max(1, 6 - dy / 2)
+                "birch" -> when (dy) { 0, 1 -> 1; 2, 3 -> 2; else -> 1 }
+                "acacia", "flat" -> when (dy) { 0, 1 -> 4; 2 -> 3; else -> 2 }
+                "umbrella" -> when (dy) { 0 -> 3; 1, 2 -> 4; 3 -> 3; else -> 2 }
+                "dark_oak" -> when (dy) { 0, 1 -> 4; 2, 3 -> 3; else -> 2 }
+                "mangrove" -> when (dy) { 0 -> 3; 1, 2 -> 4; 3 -> 3; else -> 2 }
+                "cherry" -> when (dy) { 0 -> 2; 1, 2 -> 4; 3 -> 3; else -> 2 }
+                "pale" -> when (dy) { 0 -> 2; 1, 2, 3 -> 3; 4 -> 2; else -> 1 }
+                "mushroom" -> if (dy == 0) 2 else 3
+                else -> when (dy) { 0 -> 2; 1, 2 -> 3; 3 -> 2; else -> 1 }
             }
-            for (dx in -radius..radius) {
-                for (dz in -radius..radius) {
-                    val distance = dx * dx + dz * dz
-                    val limit = radius * radius + if (profile.shape == "mushroom") 1 else -1
-                    if (distance > limit) continue
-                    if (profile.shape == "cone" && dy > 1 && distance < 2) continue
-                    if (profile.shape == "mushroom" && dy == 0) continue
-                    put(x + dx, layerY, z + dz, profile.leafBlock, onlyAir = true)
+            val radiusX = radius + if (profile.shape == "acacia" && dy == 1) 1 else 0
+            val radiusZ = radius + if (profile.shape == "cherry" && dy == 1) 1 else 0
+            for (dx in -radiusX..radiusX) {
+                for (dz in -radiusZ..radiusZ) {
+                    val nx = dx.toDouble() / radiusX.coerceAtLeast(1)
+                    val nz = dz.toDouble() / radiusZ.coerceAtLeast(1)
+                    val distance = nx * nx + nz * nz
+                    if (distance > 1.0) continue
+                    if (distance > 0.82) {
+                        val edgeSeed = (x.toLong() shl 32) xor z.toLong() xor 0x51A7C0DEL
+                        if (ProceduralWorldGenerator.hash01(x + dx, layerY, z + dz, edgeSeed) < 0.22) continue
+                    }
+                    if (profile.shape == "cone" && dy > 1 && distance < 0.025) continue
+                    put(topX + dx, layerY, topZ + dz, profile.leafBlock, onlyAir = true)
                 }
             }
         }
-        if (profile.shape == "mushroom") {
-            for (dx in -3..3) for (dz in -3..3) {
-                if (dx * dx + dz * dz <= 9) put(x + dx, trunkTop + 1, z + dz, profile.leafBlock, onlyAir = true)
-            }
-        }
     }
-
     private fun getBlock(sections: Map<Int, IntArray>, localX: Int, y: Int, localZ: Int): Int {
         val sectionY = Math.floorDiv(y, 16)
         val localY = Math.floorMod(y, 16)
