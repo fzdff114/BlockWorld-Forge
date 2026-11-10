@@ -14,6 +14,7 @@
 ## Download and file size notes
 - The `.mcworld` archive is generated locally and saved through Android's document picker; it is not fetched from a server.
 - ZIP/LevelDB compression can make a large, valid world archive appear small when many chunk palettes repeat.
+- The estimate floor is kept below the minimum preset output so compact and standard estimates remain distinguishable.
 - Do not add artificial padding; actual size depends on real terrain and feature content.
 
 ## Regression tests
@@ -25,3 +26,6 @@
 ## Validation note
 - GitHub Actions runs JVM tests and Android APK compilation before publishing the release.
 - World import and visual appearance still require testing on a real target phone and Bedrock version.
+## APK download fallback
+- If the direct GitHub Release download is slow, the release can also be fetched through GHFast or GH-Proxy public proxy endpoints.
+- These are third-party relays; verify the downloaded APK against the published SHA-256 checksum.
