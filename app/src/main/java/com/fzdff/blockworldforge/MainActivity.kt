@@ -1541,7 +1541,7 @@ private fun TerrainScreen(
             ProceduralTerrainPreview(preview)
             Text("种子：" + settings.seed + " · 起伏：" + settings.relief + " · 山脉崎岖：" + settings.mountainRuggedness, fontSize = 10.sp, color = Muted)
         }
-        SettingsCard("世界基本参数", "默认 768 方块，最大 1024 方块；尺寸越大，生成与导出耗时越长") {
+        SettingsCard("世界基本参数", "支持自定义边长 128–2048 方块；尺寸越大，生成时间、存储和导出耗时越长") {
             OutlinedTextField(
                 value = projectName,
                 onValueChange = onProjectName,
@@ -1569,9 +1569,9 @@ private fun TerrainScreen(
                     onSettings(settings.copy(seed = seed))
                 }) { Text("随机种子") }
             }
-            Text("世界边长：" + settings.worldSize + " 方块（默认 768，最大 1024）", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Ink)
+            Text("世界边长：" + settings.worldSize + " 方块（默认 1536，最大 2048）", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Ink)
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                listOf(256, 384, 512, 768, 1024).forEach { size ->
+                listOf(512, 768, 1024, 1536, 2048).forEach { size ->
                     FilterChip(
                         selected = settings.worldSize == size,
                         onClick = { onSettings(settings.copy(worldSize = size)) },
@@ -1579,6 +1579,26 @@ private fun TerrainScreen(
                     )
                 }
             }
+            var customWorldSizeText by remember(settings.worldSize) { mutableStateOf(settings.worldSize.toString()) }
+            val parsedCustomWorldSize = customWorldSizeText.toIntOrNull()
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = customWorldSizeText,
+                    onValueChange = { raw -> customWorldSizeText = raw.filter { it.isDigit() }.take(4) },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("自定义边长") },
+                    singleLine = true,
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                    )
+                )
+                OutlinedButton(
+                    enabled = parsedCustomWorldSize != null && parsedCustomWorldSize in ProceduralWorldSettings.MIN_WORLD_SIZE..ProceduralWorldSettings.MAX_WORLD_SIZE,
+                    onClick = { onSettings(settings.copy(worldSize = parsedCustomWorldSize!!)) }
+                ) { Text("应用") }
+            }
+            Text("可填 128–2048；2048² 已有 16384 个区块，生成会明显更久。", fontSize = 9.sp, color = Muted)
+
             Text("细节档位 / 文件大小", fontSize = 12.sp, color = Ink, fontWeight = FontWeight.SemiBold)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                 listOf("compact" to "低体积", "standard" to "标准", "high" to "高细节").forEach { item ->
@@ -1590,7 +1610,7 @@ private fun TerrainScreen(
                 }
             }
             Text("预计 .mcworld：" + formatBytes(estimate) + "（估算值）", fontSize = 11.sp, color = Accent, fontWeight = FontWeight.Bold)
-            Text("实际文件大小会随地形、洞穴、植被和结构数量变化。", fontSize = 9.sp, color = Muted)
+            Text("估算按压缩后的区块数据计算；实际大小取决于岩层、洞穴、矿脉、树木和结构，导出完成后显示真实文件大小。", fontSize = 9.sp, color = Muted)
         }
         SettingsCard("山脉与高原", "调整地形的壮阔程度和轮廓") {
             IntSetting("高度起伏", settings.relief, "平缓", "巨型山脉") { onSettings(settings.copy(relief = it)) }

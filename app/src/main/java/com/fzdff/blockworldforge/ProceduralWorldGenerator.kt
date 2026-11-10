@@ -7,7 +7,7 @@ import kotlin.math.floor
 
 internal data class ProceduralWorldSettings(
     val seed: Long = 20261109L,
-    val worldSize: Int = 768,
+    val worldSize: Int = 1536,
     val relief: Int = 58,
     val mountainRuggedness: Int = 62,
     val plateauAmount: Int = 24,
@@ -26,7 +26,7 @@ internal data class ProceduralWorldSettings(
     val structureTypes: Set<String> = DEFAULT_STRUCTURES
 ) {
     fun normalized(): ProceduralWorldSettings = copy(
-        worldSize = worldSize.coerceIn(128, 1024),
+        worldSize = worldSize.coerceIn(MIN_WORLD_SIZE, MAX_WORLD_SIZE),
         relief = relief.coerceIn(0, 100),
         mountainRuggedness = mountainRuggedness.coerceIn(0, 100),
         plateauAmount = plateauAmount.coerceIn(0, 100),
@@ -68,10 +68,11 @@ internal data class ProceduralWorldSettings(
         val value = normalized()
         val chunksPerSide = (value.worldSize + 15L) / 16L
         val chunks = chunksPerSide * chunksPerSide
+        // Estimate the compressed LevelDB-backed archive, not raw voxel volume.
         val densityFactor = when (value.detailPreset) {
-            "compact" -> 5_000L
-            "high" -> 17_000L
-            else -> 9_000L
+            "compact" -> 420L
+            "high" -> 1_050L
+            else -> 680L
         }
         val featureFactor = 1.0 +
             value.caveDensity * 0.0025 +
@@ -82,6 +83,9 @@ internal data class ProceduralWorldSettings(
     }
 
     companion object {
+        const val MIN_WORLD_SIZE = 128
+        const val MAX_WORLD_SIZE = 2048
+
         val DEFAULT_STRUCTURES = setOf(
             "village", "desert_temple", "jungle_temple", "ruined_portal",
             "mineshaft", "stronghold", "ocean_ruin", "watchtower"
@@ -96,7 +100,7 @@ internal data class ProceduralWorldSettings(
             }
             return ProceduralWorldSettings(
                 seed = json.optLong("seed", 20261109L),
-                worldSize = json.optInt("worldSize", 768),
+                worldSize = json.optInt("worldSize", 1536),
                 relief = json.optInt("relief", 58),
                 mountainRuggedness = json.optInt("mountainRuggedness", 62),
                 plateauAmount = json.optInt("plateauAmount", 24),
@@ -321,6 +325,30 @@ internal object ProceduralWorldGenerator {
         val threshold = 0.085 + settings.caveDensity / 1550.0
         // A single coherent 3-D field forms winding tunnels and wider chambers.
         return abs(caveNoise - 0.5) < threshold
+    }
+
+    fun rockAt(x: Int, y: Int, z: Int, settings: ProceduralWorldSettings): Int {
+        val scale = when (settings.detailPreset) {
+            "compact" -> 0.72
+            "high" -> 1.35
+            else -> 1.0
+        }
+        val mainVein = noise3(x * 0.018 * scale, y * 0.026 * scale, z * 0.018 * scale, settings.seed + 2203)
+        val secondaryVein = noise3(x * 0.052 * scale, y * 0.061 * scale, z * 0.052 * scale, settings.seed + 2213)
+        if (y < -8) {
+            return when {
+                mainVein > 0.60 && secondaryVein > 0.53 -> WorldBlockId.TUFF
+                mainVein < 0.40 && secondaryVein < 0.47 -> WorldBlockId.CALCITE
+                else -> WorldBlockId.DEEPSLATE
+            }
+        }
+        return when {
+            mainVein > 0.60 -> WorldBlockId.GRANITE
+            mainVein < 0.40 -> WorldBlockId.DIORITE
+            secondaryVein > 0.62 -> WorldBlockId.ANDESITE
+            y < -28 && secondaryVein < 0.25 -> WorldBlockId.CALCITE
+            else -> WorldBlockId.STONE
+        }
     }
 
     fun oreAt(x: Int, y: Int, z: Int, biome: BiomeDefinition, settings: ProceduralWorldSettings): Int {

@@ -236,10 +236,11 @@ class BedrockWorldFormatTest {
     }
 
     @Test
-    fun proceduralWorldSizeDefaultsLargerAndCapsAtOneThousandTwentyFour() {
-        assertEquals(768, ProceduralWorldSettings().worldSize)
-        assertEquals(768, ProceduralWorldSettings.fromJson("{}").worldSize)
-        assertEquals(1024, ProceduralWorldSettings(worldSize = 4096).normalized().worldSize)
+    fun proceduralWorldSizeDefaultsLargerAndSupportsCustomMaximum() {
+        assertEquals(1536, ProceduralWorldSettings().worldSize)
+        assertEquals(1536, ProceduralWorldSettings.fromJson("{}").worldSize)
+        assertEquals(2048, ProceduralWorldSettings(worldSize = 4096).normalized().worldSize)
+        assertEquals(128, ProceduralWorldSettings(worldSize = 32).normalized().worldSize)
     }
 
     @Test
@@ -373,6 +374,21 @@ class BedrockWorldFormatTest {
     }
 
     @Test
+    fun proceduralGeologyCreatesDeterministicRockLayers() {
+        val settings = ProceduralWorldSettings(seed = 889133L, detailPreset = "high")
+        val first = ProceduralWorldGenerator.rockAt(128, -24, 224, settings)
+        assertEquals(first, ProceduralWorldGenerator.rockAt(128, -24, 224, settings))
+        assertTrue(first in setOf(WorldBlockId.DEEPSLATE, WorldBlockId.TUFF, WorldBlockId.CALCITE))
+        val surfaceRock = ProceduralWorldGenerator.rockAt(128, 12, 224, settings)
+        assertTrue(
+            surfaceRock in setOf(
+                WorldBlockId.STONE, WorldBlockId.GRANITE, WorldBlockId.DIORITE,
+                WorldBlockId.ANDESITE
+            )
+        )
+    }
+
+    @Test
     fun proceduralTreeAndStructurePlacementAreSeedDeterministic() {
         val settings = ProceduralWorldSettings(seed = 7171L, treeDensity = 100, structureDensity = 100)
         val candidateCell = (0..30).first { cell ->
@@ -394,7 +410,7 @@ class BedrockWorldFormatTest {
     fun proceduralWorldFileEstimateRespondsToSizeAndDetailPreset() {
         val compact = ProceduralWorldSettings(worldSize = 256, detailPreset = "compact").estimatedArchiveBytes()
         val standard = ProceduralWorldSettings(worldSize = 256, detailPreset = "standard").estimatedArchiveBytes()
-        val large = ProceduralWorldSettings(worldSize = 1024, detailPreset = "standard").estimatedArchiveBytes()
+        val large = ProceduralWorldSettings(worldSize = 2048, detailPreset = "standard").estimatedArchiveBytes()
         assertTrue(compact < standard)
         assertTrue(large > standard)
     }

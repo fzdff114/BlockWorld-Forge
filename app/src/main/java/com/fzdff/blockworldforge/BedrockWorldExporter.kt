@@ -569,7 +569,11 @@ internal object BedrockWorldExporter {
 
                                     setBlock(sections, localX, worldFloorY, localZ, BEDROCK)
                                     for (y in worldFloorY + 1 until surfaceY - 3) {
-                                        var block = if (proceduralSettings != null && y < -8) DEEPSLATE else STONE
+                                        var block = if (proceduralSettings != null) {
+                                            ProceduralWorldGenerator.rockAt(worldX, y, worldZ, proceduralSettings)
+                                        } else {
+                                            STONE
+                                        }
                                         if (proceduralSettings != null && proceduralSettings.enableCaves &&
                                             ProceduralWorldGenerator.caveAt(worldX, y, worldZ, proceduralSettings)
                                         ) {
