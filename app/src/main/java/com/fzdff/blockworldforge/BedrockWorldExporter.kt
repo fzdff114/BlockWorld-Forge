@@ -939,7 +939,7 @@ internal object BedrockWorldExporter {
                 "mangrove" -> when (dy) { 0 -> 3; 1, 2 -> 4; 3 -> 3; else -> 2 }
                 "cherry" -> when (dy) { 0 -> 2; 1, 2 -> 4; 3 -> 3; else -> 2 }
                 "pale" -> when (dy) { 0 -> 2; 1, 2, 3 -> 3; 4 -> 2; else -> 1 }
-                "mushroom" -> if (dy == 0) 2 else 3
+                "mushroom" -> if (dy == 0) 3 else 2
                 else -> when (dy) { 0 -> 2; 1, 2 -> 3; 3 -> 2; else -> 1 }
             }
             val radiusX = radius + if (profile.shape == "acacia" && dy == 1) 1 else 0

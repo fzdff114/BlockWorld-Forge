@@ -11,6 +11,7 @@
 - Add horizontal pillar-axis states for branches and muddy mangrove roots.
 - Add fuller layered crowns and distinct profiles for birch, spruce, giant spruce, jungle, acacia, dark oak, mangrove, cherry, pale oak and mushroom trees.
 - Give crowns a rounded, species-specific outline and preserve branch and canopy connections across chunk boundaries.
+- Keep 768 blocks as the fallback default for newly loaded configurations and use the same mushroom cap taper in every generated tree.
 - Use 2×2 trunks for large dark oak and giant spruce specimens; add bent acacia trunks and extended mangrove roots.
 
 ## Bedrock palette state handling

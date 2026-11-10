@@ -238,6 +238,7 @@ class BedrockWorldFormatTest {
     @Test
     fun proceduralWorldSizeDefaultsLargerAndCapsAtOneThousandTwentyFour() {
         assertEquals(768, ProceduralWorldSettings().worldSize)
+        assertEquals(768, ProceduralWorldSettings.fromJson("{}").worldSize)
         assertEquals(1024, ProceduralWorldSettings(worldSize = 4096).normalized().worldSize)
     }
 

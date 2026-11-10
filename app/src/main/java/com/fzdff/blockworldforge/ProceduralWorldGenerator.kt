@@ -96,7 +96,7 @@ internal data class ProceduralWorldSettings(
             }
             return ProceduralWorldSettings(
                 seed = json.optLong("seed", 20261109L),
-                worldSize = json.optInt("worldSize", 256),
+                worldSize = json.optInt("worldSize", 768),
                 relief = json.optInt("relief", 58),
                 mountainRuggedness = json.optInt("mountainRuggedness", 62),
                 plateauAmount = json.optInt("plateauAmount", 24),
