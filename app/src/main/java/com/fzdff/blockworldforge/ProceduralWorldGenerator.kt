@@ -79,7 +79,7 @@ internal data class ProceduralWorldSettings(
             value.oreRichness * 0.0018 +
             value.treeDensity * 0.0020 +
             value.structureDensity * 0.0015
-        return (chunks * densityFactor * featureFactor).toLong().coerceAtLeast(256_000L)
+        return (chunks * densityFactor * featureFactor).toLong().coerceAtLeast(64_000L)
     }
 
     companion object {
