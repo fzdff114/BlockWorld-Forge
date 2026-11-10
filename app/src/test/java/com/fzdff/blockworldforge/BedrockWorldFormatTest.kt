@@ -236,6 +236,12 @@ class BedrockWorldFormatTest {
     }
 
     @Test
+    fun proceduralWorldSizeDefaultsLargerAndCapsAtOneThousandTwentyFour() {
+        assertEquals(768, ProceduralWorldSettings().worldSize)
+        assertEquals(1024, ProceduralWorldSettings(worldSize = 4096).normalized().worldSize)
+    }
+
+    @Test
     fun proceduralSettingsKeepSeedAndFeatureChoicesAcrossJsonRoundTrip() {
         val settings = ProceduralWorldSettings(
             seed = -782341L,
@@ -322,6 +328,50 @@ class BedrockWorldFormatTest {
     }
 
     @Test
+    fun paleGardenUsesPaleOakLogAndLeavesInsteadOfDarkOakAndOak() {
+        val biome = ProceduralWorldGenerator.BIOMES.single { it.key == "pale_garden" }
+        val profile = ProceduralWorldGenerator.treeProfile(biome, 41, 73, ProceduralWorldSettings())
+        assertEquals(WorldBlockId.PALE_OAK_LOG, profile.logBlock)
+        assertEquals(WorldBlockId.PALE_OAK_LEAVES, profile.leafBlock)
+        val log = BedrockWorldExporter.encodePaletteEntry(profile.logBlock).toString(Charsets.ISO_8859_1)
+        val leaves = BedrockWorldExporter.encodePaletteEntry(profile.leafBlock).toString(Charsets.ISO_8859_1)
+        assertTrue(log.contains("minecraft:pale_oak_log"))
+        assertTrue(leaves.contains("minecraft:pale_oak_leaves"))
+    }
+
+    @Test
+    fun treeBranchAndMangroveRootPalettesKeepTheirCorrectAxis() {
+        val branch = BedrockWorldExporter.encodePaletteEntry(
+            WorldBlockId.withLogAxis(WorldBlockId.OAK_LOG, "x")
+        ).toString(Charsets.ISO_8859_1)
+        val root = BedrockWorldExporter.encodePaletteEntry(
+            WorldBlockId.withLogAxis(WorldBlockId.MUDDY_MANGROVE_ROOTS, "z")
+        ).toString(Charsets.ISO_8859_1)
+        assertTrue(branch.contains("minecraft:oak_log"))
+        assertTrue(branch.contains("pillar_axis"))
+        assertTrue(branch.contains("x"))
+        assertTrue(root.contains("minecraft:muddy_mangrove_roots"))
+        assertTrue(root.contains("pillar_axis"))
+        assertTrue(root.contains("z"))
+    }
+
+    @Test
+    fun mushroomTreesUseMushroomStemAndProperCapBlocks() {
+        val biome = ProceduralWorldGenerator.BIOMES.single { it.key == "mushroom_fields" }
+        val profile = ProceduralWorldGenerator.treeProfile(biome, 23, 51, ProceduralWorldSettings())
+        assertEquals(WorldBlockId.MUSHROOM_STEM, profile.logBlock)
+        assertTrue(
+            profile.leafBlock == WorldBlockId.MUSHROOM_BLOCK ||
+                profile.leafBlock == WorldBlockId.RED_MUSHROOM_BLOCK
+        )
+        val stem = BedrockWorldExporter.encodePaletteEntry(profile.logBlock).toString(Charsets.ISO_8859_1)
+        val cap = BedrockWorldExporter.encodePaletteEntry(profile.leafBlock).toString(Charsets.ISO_8859_1)
+        assertTrue(stem.contains("minecraft:mushroom_stem"))
+        assertTrue(stem.contains("huge_mushroom_bits"))
+        assertTrue(cap.contains("huge_mushroom_bits"))
+    }
+
+    @Test
     fun proceduralTreeAndStructurePlacementAreSeedDeterministic() {
         val settings = ProceduralWorldSettings(seed = 7171L, treeDensity = 100, structureDensity = 100)
         val candidateCell = (0..30).first { cell ->
@@ -343,7 +393,7 @@ class BedrockWorldFormatTest {
     fun proceduralWorldFileEstimateRespondsToSizeAndDetailPreset() {
         val compact = ProceduralWorldSettings(worldSize = 256, detailPreset = "compact").estimatedArchiveBytes()
         val standard = ProceduralWorldSettings(worldSize = 256, detailPreset = "standard").estimatedArchiveBytes()
-        val large = ProceduralWorldSettings(worldSize = 512, detailPreset = "standard").estimatedArchiveBytes()
+        val large = ProceduralWorldSettings(worldSize = 1024, detailPreset = "standard").estimatedArchiveBytes()
         assertTrue(compact < standard)
         assertTrue(large > standard)
     }

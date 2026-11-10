@@ -1281,11 +1281,16 @@ internal object BedrockWorldExporter {
         when {
             blockId == BEDROCK -> output.writeByteTag("infiniburn_bit", 0)
             blockId == WATER -> output.writeIntTag("liquid_depth", 0)
-            logSpecies(blockId) != null -> output.writeStringTag("pillar_axis", "y")
+            pillarAxis(blockId) != null -> output.writeStringTag("pillar_axis", pillarAxis(blockId)!!)
             leafSpecies(blockId) != null -> {
                 output.writeByteTag("persistent_bit", 1)
                 output.writeByteTag("update_bit", 0)
             }
+            canonicalBlockId(blockId) == WorldBlockId.MUSHROOM_STEM ->
+                output.writeIntTag("huge_mushroom_bits", 15)
+            canonicalBlockId(blockId) == WorldBlockId.MUSHROOM_BLOCK ||
+                canonicalBlockId(blockId) == WorldBlockId.RED_MUSHROOM_BLOCK ->
+                output.writeIntTag("huge_mushroom_bits", 14)
         }
         output.writeEnd()
         output.writeIntTag("version", BLOCK_STATE_VERSION)
@@ -1293,7 +1298,25 @@ internal object BedrockWorldExporter {
         return output.toByteArray()
     }
 
-    private fun logSpecies(blockId: Int): String? = when (blockId) {
+    private fun canonicalBlockId(blockId: Int): Int = when {
+        blockId in (WorldBlockId.LOG_AXIS_X_OFFSET + 1)..(WorldBlockId.LOG_AXIS_X_OFFSET + 99) ->
+            blockId - WorldBlockId.LOG_AXIS_X_OFFSET
+        blockId in (WorldBlockId.LOG_AXIS_Z_OFFSET + 1)..(WorldBlockId.LOG_AXIS_Z_OFFSET + 99) ->
+            blockId - WorldBlockId.LOG_AXIS_Z_OFFSET
+        else -> blockId
+    }
+
+    private fun pillarAxis(blockId: Int): String? {
+        val canonical = canonicalBlockId(blockId)
+        if (logSpecies(canonical) == null && canonical != WorldBlockId.MUDDY_MANGROVE_ROOTS) return null
+        return when {
+            blockId in (WorldBlockId.LOG_AXIS_X_OFFSET + 1)..(WorldBlockId.LOG_AXIS_X_OFFSET + 99) -> "x"
+            blockId in (WorldBlockId.LOG_AXIS_Z_OFFSET + 1)..(WorldBlockId.LOG_AXIS_Z_OFFSET + 99) -> "z"
+            else -> "y"
+        }
+    }
+
+    private fun logSpecies(blockId: Int): String? = when (canonicalBlockId(blockId)) {
         WorldBlockId.OAK_LOG -> "oak"
         WorldBlockId.BIRCH_LOG -> "birch"
         WorldBlockId.SPRUCE_LOG -> "spruce"
@@ -1302,10 +1325,11 @@ internal object BedrockWorldExporter {
         WorldBlockId.DARK_OAK_LOG -> "dark_oak"
         WorldBlockId.MANGROVE_LOG -> "mangrove"
         WorldBlockId.CHERRY_LOG -> "cherry"
+        WorldBlockId.PALE_OAK_LOG -> "pale_oak"
         else -> null
     }
 
-    private fun leafSpecies(blockId: Int): String? = when (blockId) {
+    private fun leafSpecies(blockId: Int): String? = when (canonicalBlockId(blockId)) {
         WorldBlockId.OAK_LEAVES -> "oak"
         WorldBlockId.BIRCH_LEAVES -> "birch"
         WorldBlockId.SPRUCE_LEAVES -> "spruce"
@@ -1314,10 +1338,11 @@ internal object BedrockWorldExporter {
         WorldBlockId.DARK_OAK_LEAVES -> "dark_oak"
         WorldBlockId.MANGROVE_LEAVES -> "mangrove"
         WorldBlockId.CHERRY_LEAVES -> "cherry"
+        WorldBlockId.PALE_OAK_LEAVES -> "pale_oak"
         else -> null
     }
 
-    private fun blockName(blockId: Int): String = when (blockId) {
+    private fun blockName(blockId: Int): String = when (canonicalBlockId(blockId)) {
         AIR -> "minecraft:air"
         BEDROCK -> "minecraft:bedrock"
         STONE -> "minecraft:stone"
@@ -1356,6 +1381,9 @@ internal object BedrockWorldExporter {
         WorldBlockId.DARK_OAK_LOG -> "minecraft:dark_oak_log"
         WorldBlockId.MANGROVE_LOG -> "minecraft:mangrove_log"
         WorldBlockId.CHERRY_LOG -> "minecraft:cherry_log"
+        WorldBlockId.PALE_OAK_LOG -> "minecraft:pale_oak_log"
+        WorldBlockId.MUDDY_MANGROVE_ROOTS -> "minecraft:muddy_mangrove_roots"
+        WorldBlockId.MUSHROOM_STEM -> "minecraft:mushroom_stem"
         WorldBlockId.OAK_LEAVES -> "minecraft:oak_leaves"
         WorldBlockId.BIRCH_LEAVES -> "minecraft:birch_leaves"
         WorldBlockId.SPRUCE_LEAVES -> "minecraft:spruce_leaves"
@@ -1364,6 +1392,7 @@ internal object BedrockWorldExporter {
         WorldBlockId.DARK_OAK_LEAVES -> "minecraft:dark_oak_leaves"
         WorldBlockId.MANGROVE_LEAVES -> "minecraft:mangrove_leaves"
         WorldBlockId.CHERRY_LEAVES -> "minecraft:cherry_leaves"
+        WorldBlockId.PALE_OAK_LEAVES -> "minecraft:pale_oak_leaves"
         WorldBlockId.COAL_ORE -> "minecraft:coal_ore"
         WorldBlockId.IRON_ORE -> "minecraft:iron_ore"
         WorldBlockId.COPPER_ORE -> "minecraft:copper_ore"
@@ -1402,6 +1431,7 @@ internal object BedrockWorldExporter {
         WorldBlockId.DRIPSTONE_BLOCK -> "minecraft:dripstone_block"
         WorldBlockId.POINTED_DRIPSTONE -> "minecraft:pointed_dripstone"
         WorldBlockId.MUSHROOM_BLOCK -> "minecraft:brown_mushroom_block"
+        WorldBlockId.RED_MUSHROOM_BLOCK -> "minecraft:red_mushroom_block"
         WorldBlockId.MELON -> "minecraft:melon_block"
         WorldBlockId.HAY_BLOCK -> "minecraft:hay_block"
         else -> throw IllegalArgumentException("未知方块 ID：" + blockId)

@@ -7,7 +7,7 @@ import kotlin.math.floor
 
 internal data class ProceduralWorldSettings(
     val seed: Long = 20261109L,
-    val worldSize: Int = 256,
+    val worldSize: Int = 768,
     val relief: Int = 58,
     val mountainRuggedness: Int = 62,
     val plateauAmount: Int = 24,
@@ -26,7 +26,7 @@ internal data class ProceduralWorldSettings(
     val structureTypes: Set<String> = DEFAULT_STRUCTURES
 ) {
     fun normalized(): ProceduralWorldSettings = copy(
-        worldSize = worldSize.coerceIn(128, 512),
+        worldSize = worldSize.coerceIn(128, 1024),
         relief = relief.coerceIn(0, 100),
         mountainRuggedness = mountainRuggedness.coerceIn(0, 100),
         plateauAmount = plateauAmount.coerceIn(0, 100),
@@ -216,9 +216,25 @@ internal object WorldBlockId {
     const val MUSHROOM_BLOCK = 80
     const val MELON = 81
     const val HAY_BLOCK = 82
+    const val PALE_OAK_LOG = 91
+    const val PALE_OAK_LEAVES = 92
+    const val MUDDY_MANGROVE_ROOTS = 93
+    const val RED_MUSHROOM_BLOCK = 94
+    const val MUSHROOM_STEM = 95
+
+    const val LOG_AXIS_X_OFFSET = 1000
+    const val LOG_AXIS_Z_OFFSET = 2000
+
+    fun withLogAxis(blockId: Int, axis: String): Int = when (axis) {
+        "x" -> blockId + LOG_AXIS_X_OFFSET
+        "z" -> blockId + LOG_AXIS_Z_OFFSET
+        else -> blockId
+    }
 }
 
 internal object ProceduralWorldGenerator {
+    const val TREE_CELL_SIZE = 8
+
     val BIOMES = listOf(
         BiomeDefinition("plains", "平原", 1, WorldBlockId.GRASS, WorldBlockId.DIRT, "oak", 0.65, 0.48),
         BiomeDefinition("forest", "森林", 4, WorldBlockId.GRASS, WorldBlockId.DIRT, "oak", 0.55, 0.72),
@@ -342,9 +358,9 @@ internal object ProceduralWorldGenerator {
 
     fun treeCandidate(cellX: Int, cellZ: Int, settings: ProceduralWorldSettings): Pair<Int, Int>? {
         if (!settings.enableTrees || settings.treeDensity <= 0) return null
-        val cellSize = 7
+        val cellSize = TREE_CELL_SIZE
         val roll = hash01(cellX, cellZ, 0, settings.seed + 4001)
-        if (roll > settings.treeDensity / 112.0) return null
+        if (roll > settings.treeDensity / 100.0) return null
         val jitterX = (hash01(cellX, cellZ, 1, settings.seed + 4003) * cellSize).toInt()
         val jitterZ = (hash01(cellX, cellZ, 2, settings.seed + 4007) * cellSize).toInt()
         return (cellX * cellSize + jitterX) to (cellZ * cellSize + jitterZ)
@@ -352,24 +368,31 @@ internal object ProceduralWorldGenerator {
 
     fun treeProfile(biome: BiomeDefinition, x: Int, z: Int, settings: ProceduralWorldSettings): TreeProfile {
         val variation = (hash01(x, z, 3, settings.seed + 4021) * 4).toInt()
+        val direction = (hash01(x, z, 4, settings.seed + 4029) * 4).toInt()
+        val leanX = when (direction) { 0 -> 1; 1 -> -1; else -> 0 }
+        val leanZ = when (direction) { 2 -> 1; 3 -> -1; else -> 0 }
         return when (biome.treeStyle) {
-            "birch" -> TreeProfile(WorldBlockId.BIRCH_LOG, WorldBlockId.BIRCH_LEAVES, 5 + variation, "round")
-            "spruce" -> TreeProfile(WorldBlockId.SPRUCE_LOG, WorldBlockId.SPRUCE_LEAVES, 7 + variation, "cone")
-            "giant_spruce" -> TreeProfile(WorldBlockId.SPRUCE_LOG, WorldBlockId.SPRUCE_LEAVES, 11 + variation, "giant_cone")
-            "jungle" -> TreeProfile(WorldBlockId.JUNGLE_LOG, WorldBlockId.JUNGLE_LEAVES, 9 + variation, "umbrella")
-            "acacia" -> TreeProfile(WorldBlockId.ACACIA_LOG, WorldBlockId.ACACIA_LEAVES, 6 + variation, "flat")
-            "dark_oak" -> TreeProfile(WorldBlockId.DARK_OAK_LOG, WorldBlockId.DARK_OAK_LEAVES, 7 + variation, "wide")
-            "mangrove" -> TreeProfile(WorldBlockId.MANGROVE_LOG, WorldBlockId.MANGROVE_LEAVES, 7 + variation, "mangrove")
-            "cherry" -> TreeProfile(WorldBlockId.CHERRY_LOG, WorldBlockId.CHERRY_LEAVES, 6 + variation, "dome")
-            "pale" -> TreeProfile(WorldBlockId.DARK_OAK_LOG, WorldBlockId.OAK_LEAVES, 7 + variation, "wide")
-            "mushroom" -> TreeProfile(WorldBlockId.OAK_LOG, WorldBlockId.MUSHROOM_BLOCK, 6 + variation, "mushroom")
-            "sparse_spruce" -> TreeProfile(WorldBlockId.SPRUCE_LOG, WorldBlockId.SPRUCE_LEAVES, 5 + variation, "cone")
+            "birch" -> TreeProfile(WorldBlockId.BIRCH_LOG, WorldBlockId.BIRCH_LEAVES, 7 + variation, "birch")
+            "spruce" -> TreeProfile(WorldBlockId.SPRUCE_LOG, WorldBlockId.SPRUCE_LEAVES, 8 + variation, "cone")
+            "giant_spruce" -> TreeProfile(WorldBlockId.SPRUCE_LOG, WorldBlockId.SPRUCE_LEAVES, 12 + variation, "giant_cone")
+            "jungle" -> TreeProfile(WorldBlockId.JUNGLE_LOG, WorldBlockId.JUNGLE_LEAVES, 12 + variation, "umbrella")
+            "acacia" -> TreeProfile(WorldBlockId.ACACIA_LOG, WorldBlockId.ACACIA_LEAVES, 7 + variation, "acacia", leanX, leanZ)
+            "dark_oak" -> TreeProfile(WorldBlockId.DARK_OAK_LOG, WorldBlockId.DARK_OAK_LEAVES, 9 + variation, "dark_oak")
+            "mangrove" -> TreeProfile(WorldBlockId.MANGROVE_LOG, WorldBlockId.MANGROVE_LEAVES, 8 + variation, "mangrove")
+            "cherry" -> TreeProfile(WorldBlockId.CHERRY_LOG, WorldBlockId.CHERRY_LEAVES, 7 + variation, "cherry")
+            "pale" -> TreeProfile(WorldBlockId.PALE_OAK_LOG, WorldBlockId.PALE_OAK_LEAVES, 8 + variation, "pale")
+            "mushroom" -> TreeProfile(
+                WorldBlockId.MUSHROOM_STEM,
+                if (hash01(x, z, 5, settings.seed + 4031) < 0.5) WorldBlockId.RED_MUSHROOM_BLOCK else WorldBlockId.MUSHROOM_BLOCK,
+                6 + variation,
+                "mushroom"
+            )
+            "sparse_spruce" -> TreeProfile(WorldBlockId.SPRUCE_LOG, WorldBlockId.SPRUCE_LEAVES, 6 + variation, "cone")
             "none", "dead" -> TreeProfile(WorldBlockId.OAK_LOG, WorldBlockId.OAK_LEAVES, 0, "none")
-            "sparse" -> TreeProfile(WorldBlockId.OAK_LOG, WorldBlockId.OAK_LEAVES, 5 + variation, "round")
-            else -> TreeProfile(WorldBlockId.OAK_LOG, WorldBlockId.OAK_LEAVES, 6 + variation, "round")
+            "sparse" -> TreeProfile(WorldBlockId.OAK_LOG, WorldBlockId.OAK_LEAVES, 6 + variation, "round")
+            else -> TreeProfile(WorldBlockId.OAK_LOG, WorldBlockId.OAK_LEAVES, 7 + variation, "round")
         }
     }
-
     fun structureAnchor(cellX: Int, cellZ: Int, settings: ProceduralWorldSettings): StructureAnchor? {
         if (!settings.enableStructures || settings.structureDensity <= 0 || settings.structureTypes.isEmpty()) return null
         val spacing = 112
@@ -457,5 +480,5 @@ internal object ProceduralWorldGenerator {
     }
 }
 
-internal data class TreeProfile(val logBlock: Int, val leafBlock: Int, val height: Int, val shape: String)
+internal data class TreeProfile(val logBlock: Int, val leafBlock: Int, val height: Int, val shape: String, val leanX: Int = 0, val leanZ: Int = 0)
 internal data class StructureAnchor(val x: Int, val z: Int, val type: String)

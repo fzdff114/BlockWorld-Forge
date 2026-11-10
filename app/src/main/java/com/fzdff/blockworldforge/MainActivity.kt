@@ -1541,7 +1541,7 @@ private fun TerrainScreen(
             ProceduralTerrainPreview(preview)
             Text("种子：" + settings.seed + " · 起伏：" + settings.relief + " · 山脉崎岖：" + settings.mountainRuggedness, fontSize = 10.sp, color = Muted)
         }
-        SettingsCard("世界基本参数", "边长与细节档会影响生成时间和压缩包体积") {
+        SettingsCard("世界基本参数", "默认 768 方块，最大 1024 方块；尺寸越大，生成与导出耗时越长") {
             OutlinedTextField(
                 value = projectName,
                 onValueChange = onProjectName,
@@ -1569,9 +1569,9 @@ private fun TerrainScreen(
                     onSettings(settings.copy(seed = seed))
                 }) { Text("随机种子") }
             }
-            Text("世界边长：" + settings.worldSize + " 方块", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Ink)
+            Text("世界边长：" + settings.worldSize + " 方块（默认 768，最大 1024）", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Ink)
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                listOf(128, 192, 256, 320, 384, 512).forEach { size ->
+                listOf(256, 384, 512, 768, 1024).forEach { size ->
                     FilterChip(
                         selected = settings.worldSize == size,
                         onClick = { onSettings(settings.copy(worldSize = size)) },
@@ -1609,7 +1609,7 @@ private fun TerrainScreen(
             )
             IntSetting("树木密度", settings.treeDensity, "稀疏林地", "茂密森林") { onSettings(settings.copy(treeDensity = it)) }
             SwitchRow("生成树木与不同树冠", settings.enableTrees) { onSettings(settings.copy(enableTrees = it)) }
-            Text("橡树、白桦、云杉、巨型云杉、丛林树、金合欢、深色橡木、红树、樱花树等造型按群系分布。", fontSize = 10.sp, color = Muted)
+            Text("按群系生成橡树、白桦、针叶巨树、弯干金合欢、宽冠深色橡木、红树、樱花树、苍白橡木和蘑菇树；树干、树枝与树冠使用各自对应的原版方块。", fontSize = 10.sp, color = Muted)
         }
         SettingsCard("地下洞穴与矿脉", "生成地下通道、洞室和分层矿石") {
             IntSetting("洞穴密度", settings.caveDensity, "少量洞穴", "密集洞系") { onSettings(settings.copy(caveDensity = it)) }
